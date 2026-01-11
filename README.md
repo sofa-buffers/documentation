@@ -92,6 +92,7 @@ This data was used to keep the overhead for frequently used types as low as poss
 ### Array of ...
 
 * The ID is followed by the **number of array elements**.
+* Array sizes are in the range `1 .. INT32_MAX`.
 * This information is used by the parser to check whether all values fit into the target buffer.
 * If the receiver is not interested in the field, the parser can skip the elements based on the number.
 
