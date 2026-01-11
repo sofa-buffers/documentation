@@ -136,7 +136,7 @@ This data was used to keep the overhead for frequently used types as low as poss
 
 ## Implementation requirements
 
-Every implementation **must be streaming-capable** in order to enable the **incremental** (piecewise) transmission and reception of large messages, thereby keeping memory requirements as low as possible.
+Every implementation **must be streaming-capable** in order to enable the **incremental** (chunked) transmission and reception of large messages, thereby keeping memory requirements as low as possible.
 
 ### Serialization
 
