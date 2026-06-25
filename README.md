@@ -26,7 +26,7 @@ For **signed integers**, **Zig-Zag encoding** is also used. This maps negative n
 
 Specification of the SofaBuffer binary format:
 
-![SofaBuffers format](assets/format.drawio.svg)
+![SofaBuffers format](img/format.drawio.svg)
 
 The percentages for the individual field types correspond to the average usage in other message formats such as JSON, protocol buffers, and many more.
 

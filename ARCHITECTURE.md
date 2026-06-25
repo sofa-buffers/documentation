@@ -1,0 +1,678 @@
+<p align="center"><img src="assets/sofabuffers_logo.png" alt="SofaBuffers" height="140"></p>
+
+# SofaBuffers — Architecture & Implementation Guide
+
+**Structured Objects For Anyone** \
+*... so optimized, feels amazing.*
+
+This document specifies **what SofaBuffers is and how it works, independent of any
+programming language**. It is written so that a human *or an AI* can use it as the
+single source of truth to produce a brand-new **core library implementation
+(`corelib-<lang>`)** in a target language, byte-for-byte compatible with every
+existing implementation.
+
+It covers:
+
+1. The idea behind the protocol.
+2. The complete binary wire format (byte level).
+3. The streaming model — the reason SofaBuffers exists.
+4. A language-independent API contract — including the **generated-object layer**.
+5. Recommended language-idiomatic design patterns.
+6. Mandatory unit testing using the shared test vectors.
+7. The `assets/` requirement.
+8. The README format every `corelib-*` repository must follow.
+9. The performance-testing requirement (`perf` + `bench` tools).
+10. A conformance checklist.
+
+---
+
+## 1. The Idea
+
+SofaBuffers is a **compact, self-describing, TLV-like (Type–Length–Value) binary
+format** for serializing structured messages made of multiple fields, arrays, and
+nested structures — comparable in purpose to Protocol Buffers, but designed around a
+single hard constraint:
+
+> **Everything must be streamable.**
+> Both **serialization** and **deserialization** must work **in arbitrarily small
+> chunks**, without ever needing the whole message in memory at once.
+
+This single constraint drives the entire design:
+
+* **No length prefix on the whole message.** A message is a flat byte stream of
+  fields. Sequences (nested structures / dynamic arrays) are delimited by explicit
+  *start* and *end* markers rather than by a byte count, so an encoder can emit a
+  nested structure **without knowing its final size in advance**.
+* **Field-at-a-time encoding/decoding.** Each field carries its own type and (where
+  needed) length, so a decoder can process, skip, or route a field the instant its
+  header arrives — even if the field's payload has not been received yet.
+* **Minimal overhead, zero unnecessary copies.** The implementation should avoid
+  copying data unless unavoidable. Buffer hand-off, field-value binding, and
+  flush-callback delivery should all operate on the original bytes without
+  intermediate copies.
+* **Heap-free where the target demands it.** If the language can target embedded or
+  bare-metal systems (AVR, Cortex-M, RL78, etc.), the implementation must be able to
+  run with caller-owned, fixed-size buffers and no dynamic allocation. In managed
+  languages, heap allocation during setup is acceptable; the hot path (per-field
+  encode/decode) should avoid allocating.
+* **Small-value bias.** Integers use variable-length encoding (varint) so that the
+  common small values cost one byte. The 3-bit type tag is packed *into* the field
+  ID/length varint, so a typical small field header is a single byte.
+
+The design percentages baked into the format (which types get the cheapest
+encoding) were chosen to match the average field-type usage seen across other
+message formats (JSON, Protocol Buffers, and others), keeping overhead lowest for
+the most frequently used types.
+
+---
+
+## 2. Reference Repositories (Source Inputs)
+
+When this document and the shared test vectors disagree, the test vectors win.
+
+| Repository | Language | Role | URL |
+|------------|----------|------|-----|
+| `documentation`   | —      | Format spec (this file + README), test vectors, assets | https://github.com/sofa-buffers/documentation |
+| `corelib-c-cpp`   | C99 / C++20 | C/C++ implementation | https://github.com/sofa-buffers/corelib-c-cpp |
+| `corelib-rs`      | Rust   | Rust implementation | https://github.com/sofa-buffers/corelib-rs |
+| `corelib-py`      | Python | Python implementation | https://github.com/sofa-buffers/corelib-py |
+| `corelib-ts`      | TypeScript | TypeScript implementation | https://github.com/sofa-buffers/corelib-ts |
+| `corelib-go`      | Go     | Go implementation | https://github.com/sofa-buffers/corelib-go |
+| `corelib-java`    | Java   | Java implementation | https://github.com/sofa-buffers/corelib-java |
+| `corelib-cs`      | C#     | C# implementation | https://github.com/sofa-buffers/corelib-cs |
+| `generator`       | TypeScript | Schema → code generator | https://github.com/sofa-buffers/generator |
+
+Key reference artifacts (paths inside `documentation`):
+
+* `assets/` — must be copied verbatim into every new repo. Contains:
+  * `sofabuffers_logo.png`, `sofabuffers_icon.png` — branding.
+  * `test_vectors.json` — **the language-agnostic conformance suite**.
+  * `test_vectors_README.md` — test-vector schema documentation.
+
+---
+
+## 3. Core Concepts
+
+A **message** is an ordered stream of **fields**. There is no envelope and no
+overall length header.
+
+* **Field** — a single `(ID, type, payload)` unit.
+* **ID** — an integer chosen by the schema author identifying the field within its
+  current scope. Range `0 .. 2,147,483,647`. IDs must be unique within a single
+  sequence/scope but may repeat in different scopes.
+* **Type** — one of 8 wire types (3-bit tag), see §4.3.
+* **Sequence** — a nested scope (an embedded message). Opened by a *sequence start*
+  field and closed by a *sequence end* marker. Sequences provide:
+  * nested structures,
+  * dynamically sized arrays (unknown count up front),
+  * arrays of dynamic content (e.g. array of strings).
+* **Scope** — each sequence opens a fresh ID namespace; child IDs never collide with
+  parent IDs.
+
+A decoder that is not interested in a field (or an entire sub-sequence) must be able
+to **skip** it using only the information in the field header.
+
+---
+
+## 4. Binary Wire Format
+
+**Everything on the wire is little-endian.** Integers are encoded as varints
+(LEB128-style, least-significant group first), which is inherently little-endian.
+Multi-byte fixed-width values (IEEE-754 floats) are stored in little-endian byte
+order. There are no big-endian fields anywhere in the format.
+
+### 4.1 Varint Encoding
+
+Every integer in the format — field IDs, lengths, counts, and integer values,
+regardless of the declared bit width — is encoded as an **unsigned LEB128-style
+varint**:
+
+* The value is split into 7-bit groups, least-significant group first.
+* Each output byte holds 7 bits of payload in its low bits.
+* The **most-significant bit (0x80) is a continuation flag**: set means "more bytes
+  follow", clear means "this is the last byte".
+
+```
+value 0        -> 0x00
+value 1        -> 0x01
+value 127      -> 0x7F
+value 128      -> 0x80 0x01
+value 300      -> 0xAC 0x02
+value 16384    -> 0x80 0x80 0x01
+```
+
+A decoder must accumulate into at least a 64-bit register and shift by 7 per byte.
+Implementations should guard against overlong / overflowing varints (more bytes than
+a 64-bit value can hold) and report a malformed-message error.
+
+### 4.2 Zig-Zag Encoding (signed integers only)
+
+Signed integers are first mapped to unsigned via zig-zag, then varint-encoded, so
+that small-magnitude negatives stay small:
+
+```
+encode(n) = (n << 1) ^ (n >> (bitwidth-1))      // arithmetic shift
+decode(u) = (u >> 1) ^ -(u & 1)
+
+ 0 -> 0      -1 -> 1      1 -> 2      -2 -> 3      2 -> 4 ...
+```
+
+Use 64-bit width for the zig-zag transform (values are `int64`-domain).
+
+### 4.3 Field Header: ID + Type
+
+Each field begins with a single varint that packs the **ID** and a **3-bit type tag**:
+
+```
+header_varint = (id << 3) | type
+```
+
+The low 3 bits are the type; the remaining high bits are the ID.
+
+| Bits (type) | Value | Wire type                     |
+|-------------|-------|-------------------------------|
+| `0b000`     | 0x0   | unsigned integer (varint)     |
+| `0b001`     | 0x1   | signed integer (zig-zag varint) |
+| `0b010`     | 0x2   | fixlen value                  |
+| `0b011`     | 0x3   | array of unsigned integers    |
+| `0b100`     | 0x4   | array of signed integers      |
+| `0b101`     | 0x5   | array of fixlen values        |
+| `0b110`     | 0x6   | sequence start                |
+| `0b111`     | 0x7   | sequence end                  |
+
+These tag values are normative.
+
+### 4.4 Unsigned Integer (type `0b000`)
+
+```
+[ header_varint ] [ value_varint ]
+```
+
+The value is an unsigned varint. Example: field id `0`, value `0` → `00 00`
+(header `0x00`, value `0x00`). Field id `0`, value `127` → `00 7f`.
+
+### 4.5 Signed Integer (type `0b001`)
+
+```
+[ header_varint ] [ zigzag(value)_varint ]
+```
+
+Decode the varint, then zig-zag-decode into a signed value.
+
+### 4.6 Fixlen Value (type `0b010`)
+
+A fixlen field carries a self-describing length-and-subtype word followed by raw
+payload bytes:
+
+```
+[ header_varint ] [ fixlen_word_varint ] [ payload bytes... ]
+```
+
+`fixlen_word` packs the byte length and a 3-bit **fixlen subtype**:
+
+```
+fixlen_word = (length << 3) | fixlen_type
+```
+
+Length range `0 .. 2,147,483,647`. Fixlen subtypes:
+
+| Bits  | Value | Subtype                                   |
+|-------|-------|-------------------------------------------|
+| `0b000` | 0x0 | IEEE-754 32-bit float (little-endian)     |
+| `0b001` | 0x1 | IEEE-754 64-bit double (little-endian)    |
+| `0b010` | 0x2 | UTF-8 string (no null terminator on wire) |
+| `0b011` | 0x3 | BLOB (arbitrary binary data)              |
+| `0b100`..`0b111` | 0x4–0x7 | reserved                      |
+
+* For `fp32`/`fp64`, the payload length is 4 / 8 bytes and must be byte-swapped to
+  little-endian on big-endian hosts.
+* For `string`, the payload is the raw UTF-8 bytes **without** a trailing null byte.
+  Callers that need a null-terminated string must append it themselves.
+* For `blob`, the payload is opaque.
+* A decoder uninterested in the field skips exactly `length` payload bytes.
+
+### 4.7 Array of Unsigned / Signed Integers (types `0b011` / `0b100`)
+
+```
+[ header_varint ] [ element_count_varint ] [ elem_0_varint ] [ elem_1_varint ] ...
+```
+
+* `element_count` range `1 .. 2,147,483,647`. The count lets a decoder validate that the
+  values fit the destination buffer, or skip the whole array element-by-element.
+* Each element is an independent varint (unsigned) or zig-zag varint (signed); the
+  byte length per element varies.
+* The declared element width on the API (8/16/32/64-bit) affects only how the
+  decoded value is stored in the destination, not the wire bytes.
+
+### 4.8 Array of Fixlen Values (type `0b101`)
+
+```
+[ header_varint ] [ element_count_varint ] [ fixlen_word_varint ] [ payload... ]
+```
+
+* A **single** `fixlen_word` describes the subtype and the **per-element byte
+  length**, which applies to **all** elements.
+* Payload is `element_count × element_length` contiguous bytes.
+* Only fixed-width subtypes are allowed here (`fp32`, `fp64`). **Dynamic subtypes
+  (string, blob) are NOT allowed in a fixlen array** — to model an array of strings
+  or variable blobs, use a sequence (see §4.9).
+* `fp32`/`fp64` elements are little-endian.
+
+### 4.9 Sequence Start (type `0b110`) and Sequence End (type `0b111`)
+
+```
+sequence start:  [ header_varint = (id << 3) | 0b110 ]
+   ... child fields, possibly nested sequences ...
+sequence end:    [ 0x07 ]      // (id = 0) << 3 | 0b111  ==  0x07, a single byte
+```
+
+* A sequence is an embedded message / structure with a **fresh ID scope**.
+* **Sequence end has no ID** (its ID is fixed at 0), so it is always the single byte
+  `0x07`.
+* Because the end is a marker (not a length), an encoder can stream a sequence of
+  unknown size. A decoder that wants to skip a sequence must walk it to its matching
+  end, descending into nested sequences and tracking depth.
+* Uses: nested structures, dynamically sized arrays, and arrays of dynamic content.
+
+### 4.10 Worked Example
+
+Message: `{ id=0: unsigned 127 }`:
+
+```
+00        header: id=0, type=0b000 (unsigned)
+7f        value varint = 127
+```
+→ `00 7f` (2 bytes). This is exactly test vector `unsigned_0x7F`.
+
+---
+
+## 5. The Streaming Model (the heart of the design)
+
+Every implementation **must** be streaming-capable on both sides. "Streaming" means
+the message may be larger than any buffer the program holds, and may be produced or
+consumed incrementally.
+
+### 5.1 Streaming Serialization (Encoder)
+
+The encoder writes into an **output buffer** and invokes a **flush/drain** operation when
+that buffer fills (or on explicit flush). The flush forwards the accumulated bytes
+downstream (transmit, write to file, etc.) and the encoder continues into the now-empty
+buffer. The output buffer can be **far smaller than the message**.
+
+Required capabilities:
+
+* Accept a fixed output buffer together with a flush callback, or connect to a
+  language-idiomatic stream/writer sink — whichever pattern the language prefers.
+* Support an optional start offset so the encoder can leave space at the front of
+  the buffer for a framing header before its first byte.
+* Allow a new output buffer to be installed mid-stream (typically inside the flush
+  callback) so encoding continues without interruption or data loss.
+* Expose an explicit flush to drain any remaining buffered bytes at the end.
+* Return a status/error code on every write operation; if the buffer fills with no
+  flush registered, report buffer-full rather than overflowing.
+
+See §6 for the full list of write operations (typed scalars, arrays, sequence framing).
+
+### 5.2 Streaming Deserialization (Decoder)
+
+The decoder uses a **push-feed / pull-read** model:
+
+* **Push:** the caller feeds raw bytes in arbitrarily small chunks. A single field
+  header or payload may be split across many feed calls; the decoder's internal state
+  machine suspends and resumes at **any** byte boundary without losing state.
+* **Event:** as soon as a complete field header `(id, type)` is parsed, the decoder
+  notifies the **field handler** — a callback, visitor, or iterator yield, depending
+  on the language idiom — with the field's identity and type metadata.
+* **Pull:** the handler decides what to do with the field:
+  * **Read** the value into a typed destination (scalar, string, blob, or array).
+  * **Descend** into a nested sequence using a child handler, which follows the same
+    push-feed / pull-read pattern recursively.
+  * **Skip** — do nothing; the field's remaining bytes, or the entire sub-sequence,
+    are consumed and discarded automatically as subsequent chunks arrive.
+
+This push/pull split is what makes true input-side streaming possible: the consumer
+never has to hold the whole message, and it binds output storage lazily, per field.
+
+### 5.3 Language-Idiomatic Patterns (encouraged)
+
+A new implementation **should use the best idiomatic pattern for its language** as long
+as the wire bytes and the streaming guarantees are preserved. Proven mappings:
+
+* **Visitor pattern:** the decoder calls typed visitor methods on a user-supplied
+  object. Pull-reading becomes "the visitor receives the value or chooses to skip".
+* **Pull-parser / iterator:** expose an iterator or `next()`-style API that yields
+  field events; the caller pulls fields and reads or skips them.
+* **Flush callback / writer sink:** for the encoder, model the flush as a closure,
+  a stream/writer sink, or an iterator of byte chunks — whichever the language prefers.
+* **Heap-free / no-alloc build** where the language can target embedded or bare-metal
+  systems; otherwise keep the hot path allocation-free.
+* **Feature flags / build options:** disable fixlen, fp64, array, or sequence support,
+  and integer-overflow checks, to shrink footprint for constrained targets.
+* **Native-acceleration readiness** for scripting or interpreted languages: a
+  pure-language implementation is a valid starting point, but isolate the hot-path
+  primitives — varint encode/decode, buffer operations, field-header parsing — behind
+  internal helpers. This makes it possible to swap those helpers for a native extension
+  later **without changing the public API**. The upgrade must be invisible to callers:
+  same names, same argument shapes, same return types.
+
+Keep the **public API surface and naming reasonably parallel** across languages
+(encode/decode, sequence begin/end, read/skip) so users moving between languages
+stay oriented — see the existing ports for examples.
+
+---
+
+## 6. Language-Independent API Contract
+
+A conforming `corelib-<lang>` must expose at least the following capabilities. Names
+should be adapted to the language's conventions; semantics are fixed.
+
+**Namespace**
+* All public symbols live under the `sofab` namespace (or the closest equivalent the
+  target language offers — a package, module, crate, class prefix, or C-style name
+  prefix). The namespace name is fixed: `sofab`. Do not shorten, abbreviate, or
+  language-case it (e.g. not `SofaB`, not `Sofab`, not `sofabuffers`).
+
+**API version**
+* Expose a constant or getter that returns the integer API version (currently `1`).
+  Callers and the generator use this to verify compatibility at build or runtime.
+
+**Encoder**
+* Initialize with an output sink (buffer + flush, or a stream/writer).
+* A **write** operation covering all scalar types: unsigned integer, signed integer,
+  boolean, fp32, fp64 *(optional/feature-gated)*, string (UTF-8, no null terminator
+  on wire), and blob. If the language supports overloading, a single `write(id, value)`
+  dispatches on the value type; otherwise use `write_<type>(id, value)` variants.
+* Array write covering unsigned-integer arrays, signed-integer arrays, and
+  fixlen (fp32/fp64) arrays. Same overloading rule applies.
+* `sequence_begin(id)` and `sequence_end()` to open and close nested scopes.
+* `flush()` and the ability to swap in a new output buffer mid-stream.
+
+**Decoder**
+* Initialize with a field handler (callback / visitor / pull-iterator).
+* `feed(bytes)` accepting arbitrarily small chunks.
+* Per-field: **read** the value into a typed destination, or **skip**. If the language
+  supports overloading a single `read(destination)` suffices; otherwise use
+  `read_<type>(destination)` variants.
+* Descend into nested sequences with a child handler; auto-skip of unread fields and
+  whole sub-sequences.
+
+### 6.1 Two Audiences: Direct corelib Use vs. Generated Objects
+
+A corelib has **two** kinds of users, and the API must serve both:
+
+1. **Direct use (the power-user path).** A developer calls the raw encoder/decoder
+   from §5–§6 by hand, choosing field IDs and read/write calls themselves. This is
+   fully supported and is the right choice for tiny embedded messages or one-off
+   wire work.
+
+2. **Generated objects (the normal path).** In the common case the developer never
+   touches the raw API. Instead the **`generator`** turns a language-neutral
+   **object description** (the schema) into ready-made **objects / classes /
+   structs in the target language**. The developer just uses those generated types.
+
+> **Architectural hint:** design the corelib so that a *thin* generated layer can sit
+> on top of it. The generated objects are the product most humans interact with, so
+> **their API must be extremely simple** — while the corelib underneath must still
+> expose enough hooks that those same objects can be serialized and deserialized **in
+> chunks**.
+
+**Generated-object API must be dead simple.** A human using a generated `Person`
+object should think in terms of *fields and (de)serialize*, never in terms of varints,
+field IDs, sequence markers, or buffers. Target roughly this ergonomics (names adapted
+per language):
+
+```
+person = Person()           # plain typed fields: person.name, person.age, person.tags[]
+person.name = "Ada"
+person.age  = 36
+
+bytes = person.serialize()              # one-shot convenience
+person2 = Person.deserialize(bytes)     # one-shot convenience
+```
+
+* Generated fields are ordinary typed members with language-natural accessors;
+  IDs/types/order come from the schema and are hidden inside the generated code.
+* Nested schema messages become nested generated objects; repeated fields become the
+  language's natural list/array type.
+* Provide one-line `serialize()` / `deserialize()` convenience methods for the
+  90% case (message fits comfortably in memory).
+
+**But generated objects must ALSO stream in chunks.** The convenience methods are
+just shortcuts; every generated object must additionally accept an incremental path so
+large objects never force a full in-memory buffer:
+
+```
+# streaming OUT: feed an existing ostream / sink; bytes leave as the buffer fills
+person.serialize_to(ostream)            # writes via the corelib flush callback / sink
+
+# streaming IN: drive a decoder fed with arbitrarily small chunks
+dec = Person.decoder()                  # a generated reader bound to the corelib istream
+dec.feed(chunk1); dec.feed(chunk2); ... # push small chunks
+person = dec.finish()                   # object assembled incrementally, never fully buffered
+```
+
+**This forces a requirement back onto the corelib API:** the generated layer must be
+buildable purely from the streaming primitives. Concretely, the corelib **must**:
+
+* Let the generator drive encoding through the **same flush-callback / sink + buffer
+  swap** mechanism (§5.1), so `serialize_to` works with an output buffer smaller than
+  the object.
+* Let the generator drive decoding through the **push-feed + pull-read / visitor**
+  mechanism (§5.2), so a generated decoder can consume **arbitrarily small `feed`
+  chunks** and bind each decoded field straight into the object's member — including
+  descending into nested generated objects via `read_sequence` and resuming a
+  half-built object across chunk boundaries.
+### 6.2 Limits & Constants (normative)
+
+| Constant | Value |
+|----------|-------|
+| `API_VERSION` | `1` |
+| `ID_MAX` | 2,147,483,647 (2³¹ − 1) |
+| Field ID range | 0 .. 2,147,483,647 |
+| Unsigned value domain | 64-bit unsigned (0 .. 2⁶⁴ − 1) |
+| Signed value domain | 64-bit signed (−2⁶³ .. 2⁶³ − 1) |
+| `FIXLEN_MAX` | up to 2,147,483,647 (may be 65,535 on constrained profiles) |
+| `ARRAY_MAX` | up to 2,147,483,647 (may be 65,535 on constrained profiles) |
+| Scalar value width | 64-bit by default |
+
+---
+
+## 7. Mandatory Unit Testing
+
+Every `corelib-<lang>` **must** ship unit tests, and those tests **must** validate
+against the shared, language-agnostic conformance suite. The test folder name follows
+the language's idiomatic convention — `tests/` in Rust and Python,
+`src/test/` in Java/C#, `<pkg>_test.go` files in Go, etc.
+
+### 7.1 Use the Shared Test Vectors
+
+* Copy **`assets/test_vectors.json`** from the `documentation` repository into the
+  new repo under the language-idiomatic test resources folder. Do **not** hand-write a
+  divergent copy — the `documentation` repo is the source of truth.
+* Vector file schema:
+  ```json
+  {
+    "format": "sofabuffers-test-vectors",
+    "version": 1,
+    "description": "...",
+    "notes": { ... },
+    "vectors": [
+      {
+        "name": "unsigned_0x7F",
+        "group": "scalar/unsigned",
+        "description": "Unsigned varint at field id 0 ...",
+        "offset": 0,
+        "fields": [ { "op": "unsigned", "id": 0, "value": 127 } ],
+        "serialized": { "length": 2, "hex": "007f" }
+      }
+    ]
+  }
+  ```
+* `fields[]` operations: `unsigned`, `signed`, `boolean`, `fp32`, `fp64`, `string`,
+  `blob` (payload as `value_hex`), `array` (with `element_type` + `values`),
+  `sequence_begin` (carries `id`), `sequence_end`. `offset` is the encoder start
+  offset. Floats may appear as numbers or the string literals `"inf"`/`"-inf"`.
+  Hex is lowercase; little-endian throughout.
+* Vector categories to cover: scalars (unsigned/signed/bool/fp32/fp64/string/blob);
+  field-ID boundaries (`0` and `2,147,483,647`); integer arrays (`u8..u64`, `i8..i64`);
+  float arrays incl. special values (`±0`, `±inf`); sequences (nested, with scalars
+  and arrays); and a large composite message mixing everything.
+
+### 7.2 Required Test Kinds
+
+1. **Vector encode test** — replay each vector's `fields` through your encoder at the
+   given `offset`; assert the produced bytes equal `serialized.hex`.
+2. **Vector decode test** — feed `serialized.hex` bytes into your decoder; assert the
+   recovered fields/values match `fields`.
+3. **Roundtrip tests** — encode → decode → compare for representative messages.
+4. **Chunked-streaming tests** — the defining requirement:
+   * **Encode** into a buffer **smaller than the message**, driving the flush
+     callback / sink repeatedly; assert the concatenated output is byte-identical to
+     the one-shot output.
+   * **Decode** by feeding the input **one byte at a time** (and in odd-sized chunks);
+     assert the result is identical to feeding it all at once. This proves the state
+     machine suspends/resumes at any byte boundary.
+5. **Malformed-input tests** — truncated varints, overlong varints, unbalanced
+   sequence end, oversized lengths → must return a well-defined error, never crash.
+6. **Skip tests** — decode while ignoring some fields and whole sub-sequences; assert
+   correct resync on the following field.
+
+### 7.3 Coverage
+
+Match the bar set by existing ports. Wire a coverage job into CI and surface a badge in
+the README. The expected coverage is >90%.
+
+---
+
+## 8. Assets Requirement
+
+Copy the **`assets/` folder from the `documentation` repository** verbatim into the
+new repository. It contains:
+
+* `sofabuffers_logo.png`, `sofabuffers_icon.png` — branding; referenced by the README
+  header (`<img src="assets/sofabuffers_logo.png" ...>`).
+* `test_vectors.json` — the shared conformance suite (see §7).
+* `test_vectors_README.md` — test-vector schema documentation.
+
+---
+
+## 9. README Format
+
+Every `corelib-*` README follows the **same shape** (see `corelib-rs`, `corelib-py`,
+`corelib-go`). Reproduce this structure, swapping in the target language's specifics:
+
+1. **Header block (centered):**
+   * Centered logo: `<p align="center"><img src="assets/sofabuffers_logo.png" alt="SofaBuffers" height="140"></p>`
+   * `# SofaBuffers`
+   * Bold tagline `**Structured Objects For Anyone**` + italic
+     `*... so optimized, feels amazing.*`
+   * Link back to the GitHub organization.
+2. **`## SofaBuffers <Language> library`** — one-paragraph overview using the
+   language's selling points, the repo link, and **CI + coverage + Docs badges**.
+   The **Docs badge** links to the language's API documentation published as a GitHub
+   Pages site (see item 4). State minimum language/toolchain version and the install
+   command (`cargo add`, `pip install`, `go get`, etc.).
+3. **`## Why this design`** — a two-column table mapping design goals (streaming
+   output, streaming input, zero unnecessary copies, low/no allocation on the hot path,
+   small footprint, type safety, cross-language compatibility) to how this
+   implementation achieves them.
+4. **API documentation (GitHub Pages)** — The CI workflow must generate the
+   language's idiomatic API docs (e.g. rustdoc, pydoc/sphinx, godoc, javadoc) on
+   every successful run on the `main` branch and publish them to GitHub Pages. The
+   Docs badge in the header links to this page. There is no separate `## Source
+   documentation` section in the README; the badge is the entry point.
+5. **`## Usage`** — at least two runnable examples:
+   * basic encode + decode (using the language's idiomatic pattern — visitor /
+     pull-parser),
+   * **streaming a message larger than the buffer** via the flush callback / sink.
+6. **`## API summary`** — concise list of the encoder and decoder operations.
+7. **`## Feature flags` / build options** — table of toggles (fixlen, array,
+   sequence, fp64, overflow checks) with defaults, plus a minimal-build example.
+8. **`## Build & test`** — exact commands to build, run unit tests (incl. the shared
+   vectors), and report coverage.
+9. **`## Benchmarks`** — how to run the `perf` and `bench` tools (see §10).
+
+Keep section ordering and wording close to the existing repos so the family of
+libraries reads consistently.
+
+---
+
+## 10. Performance Testing
+
+Every `corelib-*` repo provides **two** benchmark tools, located in the language's
+idiomatic benchmark folder — the folder name follows the language standard
+(`benches/` in Rust, `cmd/perfbench/` in Go, a benchmark module in
+Python/Java/C#, etc.). Both must exercise the **same reference workloads** so numbers
+are comparable across languages:
+
+* a large integer array (e.g. a 1000-element `u64` array), and
+* a "typical message" mixing scalars of various widths, integer arrays, floats,
+  strings, and nested sequences.
+
+### 10.1 `perf` — CPU-speed-independent
+
+Measures the **intrinsic cost of the code**, independent of the host's clock speed,
+so results are comparable across machines and languages. Two acceptable techniques:
+
+* **Hardware cycle counters** (x86 TSC, AArch64 virtual count register) reporting
+  **cycles per operation** over an adaptive ~1 s CPU-time loop — "tracks work (CPU
+  cycles), not seconds."
+* **Instruction counting under a profiler** (e.g. Callgrind) — expose non-inlined
+  single-shot entry points (one operation per process invocation) so the profiler
+  counts instructions while excluding setup overhead. This is useful for languages
+  where hardware counters are not accessible.
+
+Output: cycles-per-op (or instruction count) for encode and decode of each workload.
+
+### 10.2 `bench` — throughput on the current machine (MB/s)
+
+Measures **practical throughput on the machine it runs on**, reported in **MB/s**
+(where MB = 1,000,000 bytes):
+
+* Time against **process CPU time** (`clock()` / equivalent) or, where idiomatic,
+  wall-clock `time` mode — excluding OS scheduling noise where possible.
+* Warm up once, then repeat the operation until ~1 s of CPU time elapses.
+* `throughput_MBps = (bytes_per_op × iterations) / elapsed_seconds / 1e6`.
+* Print a small table: workload × {encode, decode} → MB/s, with a note that
+  MB = 1e6 bytes and each measurement spans ~1 s.
+
+> Rule of thumb: `perf` answers "how good is the implementation?" (machine-neutral);
+> `bench` answers "how fast is it here, right now?" (MB/s on this CPU).
+
+---
+
+## 11. Conformance Checklist
+
+A new `corelib-<lang>` is conformant when:
+
+- [ ] All public symbols live under the `sofab` namespace (§6).
+- [ ] API version constant/getter returns `1` (§6).
+- [ ] Varint and zig-zag encode/decode match §4.1–4.2 exactly.
+- [ ] Field header packing `(id << 3) | type` and all 8 wire types (§4.3) are correct.
+- [ ] Fixlen word `(length << 3) | fixlen_type`, LE floats, UTF-8 strings without
+      terminator, and blobs are handled (§4.6).
+- [ ] Integer arrays, and fixlen arrays with a single shared fixlen word; no dynamic
+      subtypes in fixlen arrays (§4.7–4.8).
+- [ ] Sequence start/end framing, fresh ID scope, single-byte `0x07` end, and
+      skip-by-walking with depth tracking (§4.9).
+- [ ] **Streaming encode** into a smaller-than-message buffer via flush callback /
+      sink, with mid-stream buffer swap (§5.1).
+- [ ] **Streaming decode** via `feed` of arbitrarily small chunks, push-callback /
+      pull-read, lazy field binding, and auto-skip (§5.2).
+- [ ] Status/error codes cover all cases defined in §6.
+- [ ] The streaming primitives are sufficient to build a thin **generated-object**
+      layer with a dead-simple API that *also* serializes/deserializes in chunks; the
+      one-shot `serialize()/deserialize()` helpers are thin wrappers over the streaming
+      path (§6.1).
+- [ ] All shared **test vectors** pass for both encode and decode, plus chunked,
+      roundtrip, malformed, and skip tests (§7).
+- [ ] `assets/` copied from the `documentation` repository (§8).
+- [ ] README follows the family format with badges and the required sections (§9).
+- [ ] `perf` (CPU-independent) and `bench` (MB/s) tools present and runnable (§10).
+- [ ] CI runs build + tests + coverage; coverage badge in README.
+
+---
+
+*This document is part of the SofaBuffers `documentation` repository and is the
+language-independent specification of the format. The shared `test_vectors.json` is
+authoritative for any detail not fully captured here.*
