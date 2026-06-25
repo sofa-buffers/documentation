@@ -575,8 +575,10 @@ Every `corelib-*` README follows the **same shape** (see `corelib-rs`, `corelib-
 2. **`## SofaBuffers <Language> library`** — one-paragraph overview using the
    language's selling points, the repo link, and **CI + coverage + Docs badges**.
    The **Docs badge** links to the language's API documentation published as a GitHub
-   Pages site (see item 4). State minimum language/toolchain version and the install
-   command (`cargo add`, `pip install`, `go get`, etc.).
+   Pages site (see item 4). State the **minimum required versions** of the runtime /
+   language toolchain and of every non-optional dependency, and the install command
+   (`cargo add`, `pip install`, `go get`, etc.). Version requirements must be kept
+   up to date as the library evolves.
 3. **`## Why this design`** — a two-column table mapping design goals (streaming
    output, streaming input, zero unnecessary copies, low/no allocation on the hot path,
    small footprint, type safety, cross-language compatibility) to how this
