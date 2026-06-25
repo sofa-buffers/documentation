@@ -366,11 +366,16 @@ stay oriented — see the existing ports for examples.
 A conforming `corelib-<lang>` must expose at least the following capabilities. Names
 should be adapted to the language's conventions; semantics are fixed.
 
-**Namespace**
+**Namespace and package name**
 * All public symbols live under the `sofab` namespace (or the closest equivalent the
   target language offers — a package, module, crate, class prefix, or C-style name
   prefix). The namespace name is fixed: `sofab`. Do not shorten, abbreviate, or
   language-case it (e.g. not `SofaB`, not `Sofab`, not `sofabuffers`).
+* The **package name** (as registered with the language's package manager / registry —
+  e.g. crates.io, PyPI, npm, Maven Central) is `SofaBuffers`. This is the name users
+  type in their dependency manifest (`Cargo.toml`, `pyproject.toml`, `package.json`,
+  etc.). The package name and the namespace name are intentionally different: users
+  install `SofaBuffers` but import / use `sofab`.
 
 **API version**
 * Expose a constant or getter that returns the integer API version (currently `1`).
