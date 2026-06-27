@@ -23,7 +23,8 @@ It covers:
 8. The README format every `corelib-*` repository must follow.
 9. The performance-testing requirement (`perf` + `bench` tools).
 10. A devcontainer for local development.
-11. A conformance checklist.
+11. GitHub Actions workflows (CI + docs).
+12. A conformance checklist.
 
 ---
 
@@ -583,10 +584,11 @@ Every `corelib-*` README follows the **same shape** (see `corelib-rs`, `corelib-
    output, streaming input, zero unnecessary copies, low/no allocation on the hot path,
    small footprint, type safety, cross-language compatibility) to how this
    implementation achieves them.
-4. **API documentation (GitHub Pages)** — The CI workflow must generate the
-   language's idiomatic API docs (e.g. rustdoc, pydoc/sphinx, godoc, javadoc) on
-   every successful run on the `main` branch and publish them to GitHub Pages. The
-   Docs badge in the header links to this page. There is no separate `## Source
+4. **API documentation (GitHub Pages)** — A dedicated `docs.yml` workflow (§12.2)
+   generates the language's idiomatic API docs (e.g. rustdoc, Sphinx, TypeDoc,
+   Godoc, Javadoc, DocFX, Doxygen) on every successful push to `main` and publishes
+   them to GitHub Pages via the Actions-based deployment mechanism. The Docs badge in
+   the header links to the published site. There is no separate `## Source
    documentation` section in the README; the badge is the entry point.
 5. **`## Usage`** — at least two runnable examples:
    * basic encode + decode (using the language's idiomatic pattern — visitor /
@@ -701,7 +703,112 @@ The Docker image tag and the running container name follow the pattern `<lang>-d
 
 ---
 
-## 12. Conformance Checklist
+## 12. GitHub Workflows
+
+Every `corelib-<lang>` repository ships **two** GitHub Actions workflow files under
+`.github/workflows/`.
+
+### 12.1 CI — Build & Test (`ci.yml`)
+
+Runs on every push to `main` **and** on every pull-request targeting `main`.
+
+**Matrix build (optional)**
+
+A matrix build is worthwhile when version differences can cause real divergence:
+
+* **Scripting / interpreted languages** (Python, Node.js/TypeScript): different runtime
+  versions frequently differ in standard-library behaviour, so testing against current
+  stable and at least one prior release catches regressions early.
+* **Compiler-versioned languages** (C/C++, Rust): testing with multiple compiler
+  versions (e.g. GCC + Clang, or Rust stable + beta) surfaces portability issues.
+
+For languages with a stable, single-vendor toolchain where version-to-version
+differences rarely affect library code (e.g. Go, Java, C#), a single pinned version
+is acceptable.
+
+When a matrix *is* used, set `fail-fast: false` so a failure on one leg does not
+cancel the remaining legs — all results must be visible. Use the official GitHub
+Actions setup action for the language (`dtolnay/rust-toolchain`,
+`actions/setup-python`, `actions/setup-go`, `actions/setup-java`,
+`actions/setup-node`, etc.) and enable its built-in dependency cache. Example shape:
+
+```yaml
+strategy:
+  fail-fast: false
+  matrix:
+    version: ["<current-stable>", "<previous-stable>"]
+    os: [ubuntu-latest]          # add windows-latest / macos-latest for cross-platform targets
+```
+
+**Required steps**
+
+1. `actions/checkout@v4`
+2. Set up the runtime from `matrix.version` with caching enabled.
+3. Install / restore dependencies.
+4. Build in both debug and release configurations.
+5. Run the full test suite, including the shared test vectors from `assets/`.
+6. Generate a coverage report with the language's idiomatic tool
+   (`cargo llvm-cov`, `coverage.py`/`pytest-cov`, `gcov`/`gcovr`, `go test -cover`,
+   JaCoCo, Coverlet, etc.).
+7. Upload the report to a coverage service (Codecov or equivalent) and wire the
+   resulting badge into the README (see §9, item 2).
+
+### 12.2 Docs — API Documentation (`docs.yml`)
+
+Runs on push to `main` only (not on pull requests).
+
+**Language → documentation tool**
+
+| Language | Tool |
+|----------|------|
+| C / C++ | Doxygen |
+| Rust | `cargo doc` |
+| Python | Sphinx (`sphinx-apidoc` + HTML builder) |
+| TypeScript | TypeDoc |
+| Go | `pkgsite` / `godoc -http` static export |
+| Java | Javadoc (`mvn javadoc:javadoc` or `gradle javadoc`) |
+| C# | DocFX |
+
+**GitHub Pages deployment — Actions-based (no `gh-pages` branch)**
+
+The workflow must use GitHub's native deployment mechanism, not a `gh-pages` branch.
+The repository's **Pages** setting (Settings → Pages → Build and deployment → Source)
+must be set to **"GitHub Actions"**.
+
+Required workflow-level permissions:
+
+```yaml
+permissions:
+  pages: write
+  id-token: write
+```
+
+**Required steps**
+
+1. `actions/checkout@v4`
+2. Set up the runtime, pinned to the current stable version (no matrix needed).
+3. Install dependencies.
+4. Generate the HTML documentation into a local output folder
+   (e.g. `docs/html/`, `target/doc/`, `site/`).
+5. Upload the folder as a Pages artifact:
+   ```yaml
+   - uses: actions/upload-pages-artifact@v3
+     with:
+       path: <html-output-folder>
+   ```
+6. Deploy to GitHub Pages:
+   ```yaml
+   - uses: actions/deploy-pages@v4
+   ```
+
+**Published URL**
+
+The site is served at `https://sofa-buffers.github.io/<repo>/`. This URL is the
+target of the **Docs badge** described in §9, item 2.
+
+---
+
+## 13. Conformance Checklist
 
 A new `corelib-<lang>` is conformant when:
 
@@ -732,7 +839,12 @@ A new `corelib-<lang>` is conformant when:
 - [ ] `.devcontainer/` folder present with `Dockerfile`, `build.sh`, `start.sh`, `attach.sh`,
       `devcontainer.json`, and `.env.example`; `devcontainer.json` lists language-appropriate
       extensions and `anthropic.claude-code`; `.devcontainer/.env` is gitignored (§11).
-- [ ] CI runs build + tests + coverage; coverage badge in README.
+- [ ] `ci.yml` builds and tests on push and PR; matrix across runtime versions used
+      where version differences matter (scripting languages, multiple compilers);
+      coverage report uploaded and badge wired into README (§12.1).
+- [ ] `docs.yml` generates HTML docs and publishes to GitHub Pages via the
+      Actions-based deployment (no `gh-pages` branch); Docs badge in README links to
+      the published site (§12.2).
 
 ---
 
