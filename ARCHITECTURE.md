@@ -340,10 +340,19 @@ never has to hold the whole message, and it binds output storage lazily, per fie
 A new implementation **should use the best idiomatic pattern for its language** as long
 as the wire bytes and the streaming guarantees are preserved. Proven mappings:
 
-* **Visitor pattern:** the decoder calls typed visitor methods on a user-supplied
-  object. Pull-reading becomes "the visitor receives the value or chooses to skip".
+* **Visitor pattern *(preferred for object-capable languages)*:** the decoder calls
+  typed visitor methods on a user-supplied object. Pull-reading becomes "the visitor
+  writes the decoded value into one of the object's own members and chooses to skip
+  anything it does not recognise". This is the **recommended choice** for any language
+  that supports objects, classes, or structs, because the primary consumer of this
+  library is *generated code* — objects or classes whose members directly mirror the
+  schema fields. Those objects already exist at decode time; the visitor pattern lets
+  the decoder write each field straight into the waiting member without an intermediate
+  representation.
 * **Pull-parser / iterator:** expose an iterator or `next()`-style API that yields
-  field events; the caller pulls fields and reads or skips them.
+  field events; the caller pulls fields and reads or skips them. A reasonable
+  alternative for languages or use-cases where a pre-existing target object is not
+  available.
 * **Flush callback / writer sink:** for the encoder, model the flush as a closure,
   a stream/writer sink, or an iterator of byte chunks — whichever the language prefers.
 * **Heap-free / no-alloc build** where the language can target embedded or bare-metal
@@ -493,9 +502,11 @@ the language's idiomatic convention — `tests/` in Rust and Python,
 
 ### 7.1 Use the Shared Test Vectors
 
-* Copy **`assets/test_vectors.json`** from the `documentation` repository into the
-  new repo under the language-idiomatic test resources folder. Do **not** hand-write a
-  divergent copy — the `documentation` repo is the source of truth.
+* Copy **`assets/test_vectors.json`** from the `corelib-c-cpp` repository
+  (`assets/test_vectors.json`) into the new repo under the language-idiomatic test
+  resources folder. Do **not** hand-write a divergent copy — `corelib-c-cpp` is the
+  source of truth for the test vectors. The vector schema is documented at
+  `test/vectorgen/README.md` inside that repository.
 * Vector file schema:
   ```json
   {
@@ -553,13 +564,15 @@ the README. The expected coverage is >90%.
 
 ## 8. Assets Requirement
 
-Copy the **`assets/` folder from the `documentation` repository** verbatim into the
-new repository. It contains:
+Copy the following files into the new repository's `assets/` folder:
 
-* `sofabuffers_logo.png`, `sofabuffers_icon.png` — branding; referenced by the README
-  header (`<img src="assets/sofabuffers_logo.png" ...>`).
-* `test_vectors.json` — the shared conformance suite (see §7).
-* `test_vectors_README.md` — test-vector schema documentation.
+* **`sofabuffers_logo.png`**, **`sofabuffers_icon.png`** — branding assets; copy from
+  the `documentation` repository (`assets/`). Referenced by the README header
+  (`<img src="assets/sofabuffers_logo.png" ...>`).
+* **`test_vectors.json`** — the shared conformance suite (see §7); copy from
+  `corelib-c-cpp` (`assets/test_vectors.json`). This is the authoritative source.
+  The schema for this file is documented in `corelib-c-cpp` at
+  `test/vectorgen/README.md`.
 
 ---
 
