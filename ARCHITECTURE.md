@@ -2,8 +2,8 @@
 
 # SofaBuffers — Architecture & Implementation Guide
 
-**Structured Objects For Anyone** \
-*... so optimized, feels amazing.*
+<b>Structured Objects For Anyone</b><br>
+<i>... so optimized, feels amazing.</i>
 
 This document specifies **what SofaBuffers is and how it works, independent of any
 programming language**. It is written so that a human *or an AI* can use it as the
@@ -22,7 +22,8 @@ It covers:
 7. The `assets/` requirement.
 8. The README format every `corelib-*` repository must follow.
 9. The performance-testing requirement (`perf` + `bench` tools).
-10. A conformance checklist.
+10. A devcontainer for local development.
+11. A conformance checklist.
 
 ---
 
@@ -569,8 +570,7 @@ Every `corelib-*` README follows the **same shape** (see `corelib-rs`, `corelib-
 1. **Header block (centered):**
    * Centered logo: `<p align="center"><img src="assets/sofabuffers_logo.png" alt="SofaBuffers" height="140"></p>`
    * `# SofaBuffers`
-   * Bold tagline `**Structured Objects For Anyone**` + italic
-     `*... so optimized, feels amazing.*`
+   * Tagline: `<b>Structured Objects For Anyone</b><br>` + `<i>... so optimized, feels amazing.</i>`
    * Link back to the GitHub organization.
 2. **`## SofaBuffers <Language> library`** — one-paragraph overview using the
    language's selling points, the repo link, and **CI + coverage + Docs badges**.
@@ -648,7 +648,60 @@ Measures **practical throughput on the machine it runs on**, reported in **MB/s*
 
 ---
 
-## 11. Conformance Checklist
+## 11. Dev Container
+
+Every `corelib-<lang>` repository must include a `.devcontainer/` folder that provides a
+ready-to-use, reproducible development environment based on Docker and VS Code Dev Containers.
+
+### 11.1 Required Files
+
+| File | Purpose |
+|------|---------|
+| `Dockerfile` | Builds the container image: Ubuntu 24.04 base, language toolchain, GitHub CLI (`gh`), Node.js LTS, and Claude Code (`@anthropic-ai/claude-code`). |
+| `build.sh` | Builds the Docker image tagged as `<lang>-devcontainer` (e.g. `cpp-devcontainer`, `rust-devcontainer`). |
+| `start.sh` | Starts the container interactively, mounts the workspace and a named `claude-config` volume, and loads `.devcontainer/.env` via `--env-file` if the file exists (prints a warning when absent). |
+| `attach.sh` | Attaches an interactive `bash` shell to the already-running container. |
+| `devcontainer.json` | VS Code Dev Containers configuration: references the `Dockerfile`, loads `.devcontainer/.env` via `runArgs`, and declares VS Code extensions — language-specific tools **plus** `anthropic.claude-code`. |
+| `.env.example` | Committed template listing all supported environment variables (at minimum `GH_TOKEN` for the `gh` CLI). Each variable must have a comment explaining its purpose and required scopes. |
+
+### 11.2 `.env` File (Secrets)
+
+* `.devcontainer/.env` holds actual secret values and is **never committed**.
+* `.devcontainer/.env` **must** appear in `.gitignore` — this entry is mandatory and must be present in every `corelib-*` repository.
+* Developers copy `.env.example` → `.env` and fill in their values.
+* `start.sh` passes `--env-file "$SCRIPT_DIR/.env"` to `docker run` when the file exists.
+* `devcontainer.json` passes `"--env-file", "${localWorkspaceFolder}/.devcontainer/.env"` in `runArgs`
+  so VS Code Dev Containers loads the same variables.
+
+> **Note:** because `runArgs` always includes `--env-file`, the `.env` file **must exist** before
+> opening the project as a Dev Container in VS Code. Copy `.env.example` → `.env` first — even
+> with all values empty — to satisfy this requirement.
+
+### 11.3 Container Naming
+
+The Docker image tag and the running container name follow the pattern `<lang>-devcontainer`:
+
+| Repo | Image / container name |
+|------|------------------------|
+| `corelib-c-cpp` | `cpp-devcontainer` |
+| `corelib-rs` | `rust-devcontainer` |
+| `corelib-py` | `python-devcontainer` |
+| `corelib-ts` | `ts-devcontainer` |
+| `corelib-go` | `go-devcontainer` |
+| `corelib-java` | `java-devcontainer` |
+| `corelib-cs` | `cs-devcontainer` |
+
+### 11.4 VS Code Extensions (`devcontainer.json`)
+
+`devcontainer.json` must declare at minimum:
+
+* **Language extensions:** debugger, formatter/linter, and any test-runner or build-tool integration
+  idiomatic for the target language (see the existing `corelib-c-cpp` port for a concrete example).
+* **`anthropic.claude-code`** — the Claude Code extension (required in every port).
+
+---
+
+## 12. Conformance Checklist
 
 A new `corelib-<lang>` is conformant when:
 
@@ -676,6 +729,9 @@ A new `corelib-<lang>` is conformant when:
 - [ ] `assets/` copied from the `documentation` repository (§8).
 - [ ] README follows the family format with badges and the required sections (§9).
 - [ ] `perf` (CPU-independent) and `bench` (MB/s) tools present and runnable (§10).
+- [ ] `.devcontainer/` folder present with `Dockerfile`, `build.sh`, `start.sh`, `attach.sh`,
+      `devcontainer.json`, and `.env.example`; `devcontainer.json` lists language-appropriate
+      extensions and `anthropic.claude-code`; `.devcontainer/.env` is gitignored (§11).
 - [ ] CI runs build + tests + coverage; coverage badge in README.
 
 ---
