@@ -205,6 +205,10 @@ The value is an unsigned varint. Example: field id `0`, value `0` → `00 00`
 
 Decode the varint, then zig-zag-decode into a signed value.
 
+**Enums** have no dedicated wire type: they are encoded exactly as signed integers
+(type `0b001`, zig-zag varint). The enum semantics live only in the schema /
+generated code; on the wire an enum is indistinguishable from a signed integer.
+
 ### 4.6 Fixlen Value (type `0b010`)
 
 A fixlen field carries a self-describing length-and-subtype word followed by raw

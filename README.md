@@ -65,6 +65,7 @@ This data was used to keep the overhead for frequently used types as low as poss
 * The parser requires a temporary 64-bit buffer to sequentially decode the stream.
 * After decoding, the value is **zig-zag decoded** into a signed integer.
 * If the receiver is interested in the field, the value is then written to the destination buffer as a **signed** value.
+* **Enums** have no dedicated wire type — they are encoded exactly as signed integers (zig-zag varint). The enum meaning exists only in the schema; on the wire an enum is indistinguishable from a signed integer.
 
 ### Fixlen Length and Type
 
