@@ -208,6 +208,8 @@ Decode the varint, then zig-zag-decode into a signed value.
 **Enums** have no dedicated wire type: they are encoded exactly as signed integers
 (type `0b001`, zig-zag varint). The enum semantics live only in the schema /
 generated code; on the wire an enum is indistinguishable from a signed integer.
+Enum values are limited to the **signed 32-bit range** (−2,147,483,648 ..
+2,147,483,647).
 
 ### 4.6 Fixlen Value (type `0b010`)
 
