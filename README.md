@@ -121,12 +121,12 @@ This data was used to keep the overhead for frequently used types as low as poss
 
 ### Sequence Start
 
-* A sequence can be viewed as an embedded message or structure.
+* A sequence exists only on the wire: it opens a new ID scope and nothing more. It has no type meaning of its own.
 * A new ID scope is opened for each new sequence; conflicts with IDs of the parent sequence are not possible.
-* Sequences can be used for:
+* On top of this single primitive (a fresh scope) you can model:
   * Nested structures
   * Arrays with a dynamic number of elements
-  * Arrays with dynamic content (e.g., array of strings)
+  * Arrays of variable-length elements, e.g. strings or blobs (each element may have a different length). Blobs behave just like strings — both are dynamic byte payloads.
 
 ### Sequence Stop
 

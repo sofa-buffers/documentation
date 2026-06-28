@@ -103,11 +103,15 @@ overall length header.
   current scope. Range `0 .. 2,147,483,647`. IDs must be unique within a single
   sequence/scope but may repeat in different scopes.
 * **Type** — one of 8 wire types (3-bit tag), see §4.3.
-* **Sequence** — a nested scope (an embedded message). Opened by a *sequence start*
-  field and closed by a *sequence end* marker. Sequences provide:
+* **Sequence** — purely a wire construct: it opens a fresh ID scope and nothing
+  more. Opened by a *sequence start* field and closed by a *sequence end* marker.
+  It carries no type semantics of its own — that fresh scope is the only thing a
+  sequence does. On top of this single primitive you can model:
   * nested structures,
   * dynamically sized arrays (unknown count up front),
-  * arrays of dynamic content (e.g. array of strings).
+  * arrays of variable-length elements, e.g. strings or blobs (each element may
+    have a different length). Blobs behave just like strings here — both are
+    dynamic byte payloads.
 * **Scope** — each sequence opens a fresh ID namespace; child IDs never collide with
   parent IDs.
 
@@ -268,13 +272,17 @@ sequence start:  [ header_varint = (id << 3) | 0b110 ]
 sequence end:    [ 0x07 ]      // (id = 0) << 3 | 0b111  ==  0x07, a single byte
 ```
 
-* A sequence is an embedded message / structure with a **fresh ID scope**.
+* A sequence exists **only on the wire**: its sole effect is to open a **fresh ID
+  scope**. It has no type meaning of its own — nothing more than a new scope.
 * **Sequence end has no ID** (its ID is fixed at 0), so it is always the single byte
   `0x07`.
 * Because the end is a marker (not a length), an encoder can stream a sequence of
   unknown size. A decoder that wants to skip a sequence must walk it to its matching
   end, descending into nested sequences and tracking depth.
-* Uses: nested structures, dynamically sized arrays, and arrays of dynamic content.
+* That single primitive (a fresh scope) is enough to model: nested structures,
+  dynamically sized arrays, and arrays of variable-length elements such as strings
+  or blobs — anything where each element may have a different length. Blobs are
+  treated just like strings.
 
 ### 4.10 Worked Example
 
