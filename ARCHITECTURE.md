@@ -501,6 +501,7 @@ buildable purely from the streaming primitives. Concretely, the corelib **must**
 | Field ID range | 0 .. 2,147,483,647 |
 | Unsigned value domain | 64-bit unsigned (0 .. 2⁶⁴ − 1) |
 | Signed value domain | 64-bit signed (−2⁶³ .. 2⁶³ − 1) |
+| Enum value domain | 32-bit signed (−2³¹ .. 2³¹ − 1) |
 | `FIXLEN_MAX` | up to 2,147,483,647 (may be 65,535 on constrained profiles) |
 | `ARRAY_MAX` | up to 2,147,483,647 (may be 65,535 on constrained profiles) |
 | Scalar value width | 64-bit by default |
