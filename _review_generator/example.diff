@@ -1,0 +1,78 @@
+--- a/examples/messages/example.yaml
++++ b/examples/messages/example.yaml
+@@ -237,3 +237,75 @@
+               unionstructbool:
+                 id: 1
+                 type: boolean
++
++      # --- Struct containing an array (composite-in-struct) --------------------
++      # A struct field may itself be an array; nothing new on the wire.
++      somestructwitharray:
++        id: 22
++        type: struct
++        description: "A struct that contains an array field"
++        fields:
++          label:
++            id: 0
++            type: string
++            maxlen: 16
++            default: "row"
++          values:
++            id: 1
++            type: array
++            description: "An array living inside a struct"
++            items:
++              type: u16
++              count: 4
++            default: [1, 2, 3, 4]
++
++      # --- Array of structs ----------------------------------------------------
++      # items.type: struct -> wrapper sequence of struct sequences.
++      somestructarray:
++        id: 23
++        type: array
++        description: "Array of up to 3 point structs"
++        items:
++          type: struct
++          count: 3
++          fields:
++            x:
++              id: 0
++              type: i32
++              default: 0
++            y:
++              id: 1
++              type: i32
++              default: 0
++
++      # --- Array of arrays (matrix) --------------------------------------------
++      # items.type: array -> outer wrapper sequence whose elements are arrays.
++      somematrix:
++        id: 24
++        type: array
++        description: "Array of up to 2 rows, each up to 4 u32"
++        items:
++          type: array
++          count: 2
++          items:
++            type: u32
++            count: 4
++
++      # --- Array of unions -----------------------------------------------------
++      # items.type: union -> wrapper sequence of union sequences.
++      someunionarray:
++        id: 25
++        type: array
++        description: "Array of up to 2 variant values"
++        items:
++          type: union
++          count: 2
++          default_id: 0
++          oneof:
++            asint:
++              id: 0
++              type: i32
++            asstring:
++              id: 1
++              type: string
++              maxlen: 16
