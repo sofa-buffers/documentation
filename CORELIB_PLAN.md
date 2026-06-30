@@ -119,6 +119,8 @@ overall length header.
   * arrays of variable-length elements, e.g. strings or blobs (each element may
     have a different length). Blobs behave just like strings here — both are
     dynamic byte payloads.
+  * tagged unions ("exactly one of") — the single field present identifies the
+    active option (see §4.9.1).
 * **Scope** — each sequence opens a fresh ID namespace; child IDs never collide with
   parent IDs.
 
@@ -316,12 +318,33 @@ sequence end:    [ 0x07 ]      // (id = 0) << 3 | 0b111  ==  0x07, a single byte
   unknown size. A decoder that wants to skip a sequence must walk it to its matching
   end, descending into nested sequences and tracking depth.
 * That single primitive (a fresh scope) is enough to model: nested structures,
-  dynamically sized arrays, and arrays of variable-length elements such as strings
-  or blobs — anything where each element may have a different length. Blobs are
-  treated just like strings.
+  dynamically sized arrays, arrays of variable-length elements such as strings
+  or blobs (anything where each element may have a different length; blobs are
+  treated just like strings), and **tagged unions** (see §4.9.1).
 * **Maximum nesting depth is 255** (`MAX_DEPTH`, §6.2). An encoder must not open more
   than 255 nested sequences; a decoder must reject a message that nests deeper with an
   `InvalidMessage` error rather than risk unbounded recursion / stack growth.
+
+### 4.9.1 Structs and Unions on the Wire
+
+Higher-level aggregates lower onto the sequence primitive — they are **not** separate
+wire types:
+
+* A **struct** (nested message) is a sequence: `sequence_start(id)`, its child fields in
+  their own fresh id scope, then `sequence_end`.
+* A **union** ("exactly one of") is also a sequence opening a fresh id scope, but it
+  carries **at most one** child — the active option, written under that option's id. The
+  child's **id is the discriminator**: the decoder learns which option is active purely
+  from the id of the single field it finds. If the sequence is empty (the active option
+  is the schema-designated default and was elided by sparse encoding), the decoder falls
+  back to the union's default option (`default_id`). More than one child in a union
+  sequence is malformed (`InvalidMessage`).
+
+Because both are sequences, **a struct and a union are indistinguishable on the wire** —
+the field's declared type in the schema is what tells them apart; the bytes never do.
+Struct/union framing is **always emitted** (sequences are not subject to the sparse
+"omit a field equal to its default" optimization; only the scalar fields *inside* them
+may be elided when equal to their defaults).
 
 ### 4.10 Worked Example
 
@@ -594,9 +617,11 @@ the language's idiomatic convention — `tests/` in Rust and Python,
   represented — follow the authoritative `test_vectors_README.md` linked above rather
   than a copy here, so this plan can never drift from the generated format.
 * Vector categories to cover: scalars (unsigned/signed/bool/fp32/fp64/string/blob);
-  field-ID boundaries (`0` and `2,147,483,647`); integer arrays (`u8..u64`, `i8..i64`);
-  float arrays incl. special values (`±0`, `±inf`); sequences (nested, with scalars
-  and arrays); and a large composite message mixing everything.
+  field-ID boundaries (`0` and `2,147,483,647`); **all three array wire types** —
+  unsigned-integer arrays (`u8..u64`, type `0b011`), signed-integer arrays (`i8..i64`,
+  type `0b100`), and fixlen/float arrays (`fp32`/`fp64`, type `0b101`) incl. special
+  values (`±0`, `±inf`); sequences (nested, with scalars and arrays; structs and unions);
+  and a large composite message mixing everything.
 
 ### 7.2 Required Test Kinds
 

@@ -145,6 +145,7 @@ This data was used to keep the overhead for frequently used types as low as poss
   * Nested structures
   * Arrays with a dynamic number of elements
   * Arrays of variable-length elements, e.g. strings or blobs (each element may have a different length). Blobs behave just like strings — both are dynamic byte payloads.
+  * Tagged unions ("exactly one of") — the union opens a sequence carrying at most one child, and the **id of that single field** identifies the active option. A struct and a union look identical on the wire; the schema tells them apart.
 * Sequences may nest up to a maximum depth of **255**; a decoder must reject deeper nesting as a malformed message.
 
 ### Sequence End
