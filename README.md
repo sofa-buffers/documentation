@@ -73,6 +73,7 @@ This data was used to keep the overhead for frequently used types as low as poss
 * The parser requires a temporary 64-bit buffer for sequential decoding of the stream.
 * If the receiver is interested in the field, the value is then written to the destination buffer as an **unsigned** value.
 * **Booleans** have no dedicated wire type — they are encoded exactly as unsigned integers with the value `0` (false) or `1` (true). The corelib provides boolean read/write helpers for this mapping; on the wire a boolean is indistinguishable from an unsigned integer.
+* **Bitfields** have no dedicated wire type — they are mapped to unsigned integers on the wire. The bit layout is handled by the generated message code; the corelib only sees a plain unsigned integer.
 
 ### Signed Integer
 

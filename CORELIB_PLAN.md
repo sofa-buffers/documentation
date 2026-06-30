@@ -212,6 +212,10 @@ result is indistinguishable from an unsigned integer. (The shared test vectors c
 `boolean` op accordingly; it encodes exactly as an unsigned `0`/`1`, e.g. `boolean true`
 at id `0` → `00 01`.)
 
+**Bitfields / flag sets** likewise have no wire type — they are mapped to an unsigned
+integer on the wire, and the bit layout is handled entirely by the **generated message
+code** (and the schema). The corelib only ever sees a plain unsigned integer.
+
 ### 4.5 Signed Integer (type `0b001`)
 
 ```
