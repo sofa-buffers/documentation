@@ -80,10 +80,19 @@ which is what keeps them compact:
 | `u8`…`u64`   | array of unsigned integers (§4.7) |
 | `i8`…`i64`   | array of signed integers (§4.7) |
 | `fp32` `fp64`| array of fixlen values (§4.8) |
+| `enum`       | array of **signed** integers (§4.7) — enum → signed varint |
+| `boolean`    | array of **unsigned** integers (§4.7) — bool → `0`/`1` |
+| `bitfield`   | array of **unsigned** integers (§4.7) — packed flag word per element |
 
-- `count` in the schema is the array's **capacity** N. On the wire the
-  `element_count` is the **actual** number of elements, in `0 .. N`; the decoder
-  validates `≤ N`.
+`enum`, `boolean`, and `bitfield` arrays reuse the existing scalar array wire
+types — they already lower to a single signed/unsigned int — so there is **no new
+wire form** for them; only the schema must permit them as element types.
+
+- `count` in the schema is the array's **capacity** N — a sizing hint, **never on
+  the wire**. The wire's `element_count` is the **actual** number of elements, in
+  `0 .. N`; the decoder validates `≤ N`. `count` is **optional**, exactly like
+  `maxlen`: omit it for a dynamic/unbounded collection (heap targets); provide it
+  so heap-less targets can pre-size the buffer.
 - `element_count = 0` is a valid **explicit empty array** (CORELIB_PLAN §4.7); for
   a float array, count 0 means no `fixlen_word` follows (§4.8).
 
@@ -113,6 +122,11 @@ A sequence carrying **at most one** child: the present field, whose `id` selects
 the active `oneof` option. `default_id` applies when none is set. Indistinguishable
 on the wire from a one-field struct; the schema disambiguates. An empty union
 sequence means "no option active" → `default_id`.
+
+A union **option may be any field type** — a scalar, an array, a struct, even
+another union — so a union models a tagged sum type with an arbitrary payload.
+Nothing special on the wire: the active option is just its normal encoding,
+placed as the single child.
 
 ```
 someunion, option2 (id1) active:  seq( [string id1] )
@@ -147,11 +161,12 @@ explicit empty array.
 
 | Case | Wire structure | Status |
 |------|----------------|--------|
-| **struct with arrays** | the struct is a sequence (§4.1); a child is a scalar array (§3) or array wrapper (below) | ✅ today — a struct field can be `type: array` |
-| **array of strings/blobs** | `seq( [string id0] [string id0] … )` — elements are fixlen values | ✅ today (schema routes string/blob items to a sequence) |
-| **array of structs** | `seq( elem₀:seq(fields…) elem₁:seq(fields…) … )` | ⚠ needs schema extension (§6) |
-| **array of unions** | `seq( elem₀:seq(option) elem₁:seq(option) … )` | ⚠ needs schema extension |
-| **array of arrays** | `seq( elem₀:‹array› elem₁:‹array› … )` — each child is a scalar array or inner wrapper | ⚠ needs schema extension |
+| **struct with arrays** | the struct is a sequence (§4.1); a child is a scalar array (§3) or array wrapper (below) | ✅ a struct field can be `type: array` |
+| **array of strings/blobs** | `seq( [string id0] [string id0] … )` — elements are fixlen values | ✅ schema routes string/blob items to a sequence |
+| **array of structs** | `seq( elem₀:seq(fields…) elem₁:seq(fields…) … )` | ✅ via recursive `items` (§6) |
+| **array of unions** | `seq( elem₀:seq(option) elem₁:seq(option) … )` | ✅ via recursive `items` |
+| **array of arrays** | `seq( elem₀:‹array› elem₁:‹array› … )` — each child is a scalar array or inner wrapper | ✅ via recursive `items` |
+| **map** = `array of struct{ key, value }` | a wrapper sequence of 2-field structs | ✅ a pattern, not a distinct type |
 
 Worked sketch — `points: array of struct{ x:i32, y:i32 }` (3 elements):
 
@@ -171,34 +186,73 @@ as a standalone field (leaf, scalar array, or sequence) and place it as a child
 sequence depth; the total stays within `MAX_DEPTH = 255`. There is no special case
 beyond "leaf / scalar-array vs. sequence."
 
+### 5.4 Maps and recursive types
+
+**Map** — there is no distinct map type; a map is `array of struct{ key, value }`
+(a wrapper sequence of two-field structs). Its `count` follows the rule from §3:
+it is a **capacity**, **optional**, and needed only so heap-less targets can
+pre-size — a heap target omits it for an unbounded map. `count` never appears on
+the wire, so a "fixed length" is not baked into a map; only the actual number of
+entries is transmitted.
+
+**Recursive types** — a struct may reference itself, directly or through an array
+element, via a `$ref` to a predefined `$defs` struct. This expresses trees and
+linked lists:
+
+```
+treenode = struct{ value: i32, children: array of <$ref treenode> }
+```
+
+On the wire this is nothing new — just nested sequences that bottom out when a
+node's child array is empty or omitted. Three guardrails:
+
+- **Decode is bounded.** `MAX_DEPTH = 255` (CORELIB_PLAN §4.9): a decoder rejects
+  anything nested deeper, so a hostile or buggy stream cannot exhaust the stack.
+- **Termination must be reachable.** Recursion has to pass through an
+  optional / possibly-empty field (an array, or an omittable child) so a finite
+  instance exists — an empty/absent child array is the natural base case. A struct
+  that *required* a non-empty copy of itself could never be encoded.
+- **Encode needs an acyclic graph.** Trees are acyclic by construction; if an
+  application hands the encoder an object that points back to an ancestor (a real
+  cycle), encoding would loop — the generated encoder should guard with the same
+  `MAX_DEPTH` budget and error rather than spin.
+
+Schema validation itself does **not** loop: a `$ref` in a message definition is an
+opaque name the generator resolves, not a structure the validator expands, so
+validating a recursive definition terminates immediately.
+
 ---
 
 ## 6. Schema implications
 
-The wire model supports unbounded nesting, but the YAML schema must be able to
-**express and validate** it. Current `sofabuffers-schema-v1.json`:
+The wire model supports unbounded nesting; the YAML schema must be able to
+**express and validate** it. The proposed extension to
+`sofabuffers-schema-v1.json` makes the array element definition (`items`)
+**recursive** — effectively a field definition without an `id` — so every type can
+be an array element:
 
-- ✅ scalars, enum, bitfield, bool, string, blob, scalar arrays, string/blob
-  arrays, nested structs, unions, and **struct-with-arrays**.
-- ❌ **array of struct / union / array**: `items.type` is restricted to scalars +
-  `string`/`blob`.
+- leaf elements: `u8…u64`, `i8…i64`, `fp32`/`fp64`, `string`, `blob`, **`enum`**,
+  **`boolean`**, **`bitfield`** (the last three reuse the scalar array wire forms);
+- composite elements: **`struct`** (`fields`), **`union`** (`oneof` / `default_id`),
+  **`array`** (nested `items`) — the recursion that yields matrices, lists of
+  records, and lists of variants;
+- recursion via `$ref` to a predefined `$defs` struct/union (§5.4).
 
-To allow the missing cases, `items` must become **recursive** — effectively a
-field definition in its own right, so an array element can carry `fields`
-(struct), `oneof` (union), or nested `items` (array), beyond the current element
-types. Concretely: extend the `items.type` enum with `struct` / `union` / `array`
-(optionally `enum` / `boolean` / `bitfield`); conditionally require the matching
-sub-definition per element type (mirroring the `field` `allOf` blocks); recurse
-validation/`default` into the nested element shape.
+The schema requires the matching sub-definition per element type
+(`struct → fields`, `union → oneof`, `array → items`, `enum → enum`,
+`bitfield → bits`) and rejects mismatches (e.g. `maxlen` on a struct element, or
+`fields` on a scalar). **The deeper the nesting allowed, the larger and more
+conditional the schema — but it buys arbitrary composition under one uniform wire
+rule (§5.3).**
 
-**The deeper the nesting we allow, the larger and more conditional the JSON schema
-gets** — but it buys arbitrary composition (matrices, lists of records, lists of
-variants) under one uniform wire rule (§5.3). Worth it.
+Relaxations carried by the zero-length-array change:
 
-Two further relaxations implied by the zero-length-array change:
+- `items.count` is the **capacity** N and is now **optional** (like `maxlen`):
+  present → heap-less targets can pre-size and the wire carries `0 .. N`; omitted →
+  dynamic/unbounded. It never appears on the wire.
+- the array `default` may be **shorter than, or empty relative to,** `count`
+  (`minItems` dropped; `maxItems ≤ count` kept), so an explicit `default: []` can
+  override a non-empty default (§2).
 
-- `items.count` is the **capacity** N; the wire carries `0 .. N`. So the `default`
-  array need not have exactly N items — `minItems` should relax from `count` to
-  `0` (today it is pinned `minItems = maxItems = count`).
-- an explicit `default: []` must be allowed for array fields (the
-  "override a non-empty default with empty" case, §2).
+Deliberately left for later (cheap to add): deep `default`-value validation for
+composite-element arrays (currently a generic array bounded by `count`).

@@ -111,14 +111,15 @@
             "i8", "i16", "i32", "i64",
             "fp32", "fp64",
             "string", "blob",
-            "struct", "union", "array"
+            "struct", "union", "array",
+            "enum", "boolean", "bitfield"
           ]
         },
         "count": {
           "type": "integer",
           "minimum": 1,
           "maximum": 2147483647,
-          "description": "Capacity (maximum element count) of this array dimension. The wire may carry 0 .. count elements."
+          "description": "Capacity (maximum element count) of this array dimension. Optional, but required by targets that cannot allocate dynamically (so the buffer can be pre-sized). When present, the wire may carry 0 .. count elements; when omitted, the array is dynamic / unbounded. Never appears on the wire either way."
         },
         "maxlen": {
           "type": "integer",
@@ -157,9 +158,33 @@
         "items": {
           "$ref": "#/$defs/arrayItems",
           "description": "Inner element definition when 'type' is array (array of arrays)."
+        },
+        "enum": {
+          "description": "Member definitions when 'type' is enum.",
+          "oneOf": [
+            { "$ref": "#/$defs/enum" },
+            {
+              "type": "object",
+              "properties": { "$ref": { "type": "string", "description": "Reference to a predefined enum in $defs." } },
+              "required": ["$ref"],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "bits": {
+          "description": "Flag definitions when 'type' is bitfield.",
+          "oneOf": [
+            { "$ref": "#/$defs/bitfield" },
+            {
+              "type": "object",
+              "properties": { "$ref": { "type": "string", "description": "Reference to a predefined bitfield in $defs." } },
+              "required": ["$ref"],
+              "additionalProperties": false
+            }
+          ]
         }
       },
-      "required": ["type", "count"],
+      "required": ["type"],
       "additionalProperties": false,
       "allOf": [
         { "if": { "properties": { "type": { "const": "struct" } }, "required": ["type"] }, "then": { "required": ["fields"] } },
@@ -169,7 +194,11 @@
         { "if": { "required": ["fields"] }, "then": { "properties": { "type": { "const": "struct" } } } },
         { "if": { "required": ["oneof"] }, "then": { "properties": { "type": { "const": "union" } } } },
         { "if": { "required": ["default_id"] }, "then": { "properties": { "type": { "const": "union" } } } },
-        { "if": { "required": ["items"] }, "then": { "properties": { "type": { "const": "array" } } } }
+        { "if": { "required": ["items"] }, "then": { "properties": { "type": { "const": "array" } } } },
+        { "if": { "properties": { "type": { "const": "enum" } }, "required": ["type"] }, "then": { "required": ["enum"] } },
+        { "if": { "properties": { "type": { "const": "bitfield" } }, "required": ["type"] }, "then": { "required": ["bits"] } },
+        { "if": { "required": ["enum"] }, "then": { "properties": { "type": { "const": "enum" } } } },
+        { "if": { "required": ["bits"] }, "then": { "properties": { "type": { "const": "bitfield" } } } }
       ]
     },
 
