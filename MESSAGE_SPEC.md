@@ -68,7 +68,7 @@ A **message-layer** rule; the wire spec is deliberately unaware of it (CORELIB_P
   value meaning where needed — e.g. a command enum with `NONE = 0` whose handler
   does nothing.
 - **Empty ≠ absent.** The wire can now carry an explicit empty array
-  (`element_count = 0`) and an empty sequence (`start` immediately `end`), so:
+  (`element_count = 0`) and an empty sequence (`start` immediately `0x07`), so:
   - *absent* → reconstructed as the default (which may be non-empty, e.g.
     `default: [3, 4]`);
   - *explicit empty* → the empty collection, overriding a non-empty default.
@@ -153,6 +153,11 @@ The single rule that covers every remaining case:
 > a fixlen value (string/blob) or a nested sequence (struct / union / inner
 > array) — so element boundaries are unambiguous.
 
+Such a wrapper carries **no count field**: its elements are delimited by the
+sequence end (`0x07`), in contrast to the compact scalar arrays of §3, which
+prefix an `element_count`. (Both forms are "arrays"; they differ only in how the
+length is recovered — a prefix count vs. a delimiter.)
+
 Why a wrapper sequence and not "the same field id repeated" (protobuf `repeated`):
 only the wrapper can represent an **explicit empty** array (an empty wrapper
 sequence), staying consistent with the `element_count = 0` scalar form (§2).
@@ -203,7 +208,7 @@ states. Skipping an unwanted array-of-composite nests through the same
 | **array of strings/blobs** | `seq[k]( [0:str] [1:str] … )` — elements are fixlen values | ✅ schema routes string/blob items to a sequence |
 | **array of structs** | `seq[k]( seq[0](fields…) seq[1](fields…) … )` | ✅ via recursive `items` (§6) |
 | **array of unions** | `seq[k]( seq[0](option) seq[1](option) … )` | ✅ via recursive `items` |
-| **array of arrays** | `seq[k]( [0:arr]… seq[1](…) … )` — each child is a scalar array or inner wrapper | ✅ via recursive `items` |
+| **array of arrays** | `seq[k]( [0:arr] [1:arr] … )` — each child is itself an array (a compact scalar array, or a wrapper if its elements are composite) | ✅ via recursive `items` |
 | **map** = `array of struct{ key, value }` | `seq[k]( seq[0]([0:str] key  [1:u32] val) … )` | ✅ a pattern, not a distinct type |
 
 Worked sketch — `points: array of struct{ x:i32, y:i32 }` (3 elements):
@@ -228,11 +233,11 @@ There is no special case beyond "leaf / scalar-array vs. sequence."
 ### 5.4 Maps and recursive types
 
 **Map** — there is no distinct map type; a map is `array of struct{ key, value }`
-(a wrapper sequence of two-field structs). Its `count` follows the rule from §3:
-it is a **capacity**, **optional**, and needed only so heap-less targets can
-pre-size — a heap target omits it for an unbounded map. `count` never appears on
-the wire, so a "fixed length" is not baked into a map; only the actual number of
-entries is transmitted.
+(a wrapper sequence of two-field structs). Being a sequence-form array it carries
+**no length field**: entries are delimited by the sequence end (`0x07`), each at
+its index id (§5.1). Schema `count` is therefore just an optional **capacity** hint
+(§3) — a heap target omits it for an unbounded map; a heap-less target supplies it
+to pre-size. A "fixed length" is never baked into a map.
 
 **Recursive types** — a struct may reference itself, directly or through an array
 element, via a `$ref` to a predefined `$defs` struct. This expresses trees and
@@ -267,8 +272,8 @@ validating a recursive definition terminates immediately.
 The wire model supports unbounded nesting; the YAML schema must be able to
 **express and validate** it. The proposed extension to
 `sofabuffers-schema-v1.json` makes the array element definition (`items`)
-**recursive** — effectively a field definition without an `id` — so every type can
-be an array element:
+**recursive** — effectively a field definition without a schema `id` (the element's
+wire id is its array index, §5.1) — so every type can be an array element:
 
 - leaf elements: `u8…u64`, `i8…i64`, `fp32`/`fp64`, `string`, `blob`, **`enum`**,
   **`boolean`**, **`bitfield`** (the last three reuse the scalar array wire forms);
