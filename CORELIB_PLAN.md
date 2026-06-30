@@ -275,14 +275,13 @@ Length range `0 .. 2,147,483,647`. Fixlen subtypes:
 [ header_varint ] [ element_count_varint ] [ elem_0_varint ] [ elem_1_varint ] ...
 ```
 
-* `element_count` range `1 .. 2,147,483,647`. The count lets a decoder validate that the
+* `element_count` range `0 .. 2,147,483,647`. The count lets a decoder validate that the
   values fit the destination buffer, or skip the whole array element-by-element.
-* **An array is never empty on the wire** (`element_count` is always ≥ 1, here and for
-  fixlen arrays in §4.8). An empty collection is represented by **omitting the field
-  entirely**; the generated object defaults that field to an empty list — exactly how
-  protobuf treats empty repeated fields. There is intentionally no zero-count array form,
-  so "explicitly empty" and "absent" are indistinguishable, consistent with the format's
-  sparse, omit-the-default model.
+* **`element_count` may be `0`.** A zero-count array is a valid, fully-specified empty
+  array on the wire — exactly `[ header_varint ] [ element_count_varint = 0 ]`, with no
+  elements following. The wire format makes no claim about how an explicit empty array
+  relates to an absent field; whether the two are distinguished, and what each means, is
+  a code-generator concern, not a wire-level one.
 * Each element is an independent varint (unsigned) or zig-zag varint (signed); the
   byte length per element varies.
 * The declared element width on the API (8/16/32/64-bit) affects only how the
@@ -297,6 +296,9 @@ Length range `0 .. 2,147,483,647`. Fixlen subtypes:
 * A **single** `fixlen_word` describes the subtype and the **per-element byte
   length**, which applies to **all** elements.
 * Payload is `element_count × element_length` contiguous bytes.
+* When `element_count == 0` the array is empty: **no `fixlen_word` and no payload
+  follow** — the field is exactly `[ header_varint ] [ element_count_varint = 0 ]`. (A
+  trailing `fixlen_word` would otherwise be meaningless for zero elements.)
 * Only fixed-width subtypes are allowed here (`fp32`, `fp64`). **Dynamic subtypes
   (string, blob) are NOT allowed in a fixlen array** — to model an array of strings
   or variable blobs, use a sequence (see §4.9).
@@ -317,6 +319,10 @@ sequence end:    [ 0x07 ]      // (id = 0) << 3 | 0b111  ==  0x07, a single byte
 * Because the end is a marker (not a length), an encoder can stream a sequence of
   unknown size. A decoder that wants to skip a sequence must walk it to its matching
   end, descending into nested sequences and tracking depth.
+* An **empty sequence** — a `sequence start` immediately followed by its `0x07` end —
+  is legal and well-formed; a decoder must accept it. It is the composite-type
+  counterpart of a zero-count array (§4.7): the encoding by which an explicitly empty
+  dynamic array, string/blob array, or other sequence-modeled collection is represented.
 * That single primitive (a fresh scope) is enough to model nested structures,
   dynamically sized arrays, arrays of variable-length elements such as strings
   or blobs (anything where each element may have a different length; blobs are
