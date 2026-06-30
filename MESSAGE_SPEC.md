@@ -157,15 +157,23 @@ header-less element form here**; the only header-less elements are the compact
 scalar arrays of §3, which are a different wire type with their own count-driven
 decode states.
 
-Each element child carries the **fixed conventional id `0`**; the generated layer
-assigns elements by **position**, not by id. (This intentionally relaxes the
-"unique ids per scope" rule that applies to structs — for an array the repeated id
-*is* the array.) A fixed id keeps each element header one byte and imposes no
-length cap. The corelib reports each element header like any other field and does
-not enforce id uniqueness; mapping the id-`0` children to array slots is the
-generated code's job. The wrapper sequence carries the array field's own `id` in
-its parent scope; an empty wrapper (`start` immediately `0x07`) is the explicit
-empty array.
+**Element id = the 0-based array index.** The first element has id `0`, the second
+id `1`, and so on, so on the wire **id ≡ array index**. This keeps the ids unique
+within the wrapper scope (the "unique ids per scope" rule holds, no exception), and
+the generated code can place each element directly at `dest[id]` without a separate
+counter. Elements appear in ascending index order. (Languages with 1-based arrays,
+e.g. Lua, apply the +1 offset in their binding; the wire is always 0-based.)
+
+Consequences:
+- The header follows the id: indices `0..15` keep a **one-byte** header; from index
+  `16` it is two bytes, from `2048` three, etc. (`varint((id<<3)|type)`). Only
+  composite/sequence arrays pay this — the compact scalar arrays of §3 carry no
+  per-element headers — and since composite elements are already framed, the growth
+  is modest.
+- Array length is bounded by `ID_MAX` (INT32_MAX), the same range as the capacity.
+
+The wrapper sequence carries the array field's own `id` in its parent scope; an
+empty wrapper (`start` immediately `0x07`) is the explicit empty array.
 
 **Decoder cost (minimal-footprint targets).** Array-of-composite needs **no new
 decoder state**: it reuses the existing idle + sequence-push/pop + leaf states, so
@@ -179,7 +187,7 @@ states. Skipping an unwanted array-of-composite nests through the same
 | Case | Wire structure | Status |
 |------|----------------|--------|
 | **struct with arrays** | the struct is a sequence (§4.1); a child is a scalar array (§3) or array wrapper (below) | ✅ a struct field can be `type: array` |
-| **array of strings/blobs** | `seq( [string id0] [string id0] … )` — elements are fixlen values | ✅ schema routes string/blob items to a sequence |
+| **array of strings/blobs** | `seq( [string id0] [string id1] … )` — elements are fixlen values | ✅ schema routes string/blob items to a sequence |
 | **array of structs** | `seq( elem₀:seq(fields…) elem₁:seq(fields…) … )` | ✅ via recursive `items` (§6) |
 | **array of unions** | `seq( elem₀:seq(option) elem₁:seq(option) … )` | ✅ via recursive `items` |
 | **array of arrays** | `seq( elem₀:‹array› elem₁:‹array› … )` — each child is a scalar array or inner wrapper | ✅ via recursive `items` |
@@ -188,20 +196,21 @@ states. Skipping an unwanted array-of-composite nests through the same
 Worked sketch — `points: array of struct{ x:i32, y:i32 }` (3 elements):
 
 ```
-points: seq(
-  seq( [i32 x id0] [i32 y id1] )     # element 0  (inner ids are the struct's own field ids)
-  seq( [i32 x id0] [i32 y id1] )     # element 1
-  seq( [i32 x id0] [i32 y id1] )     # element 2
-)                                    # the three element-wrappers themselves all sit at id 0
+points: seq(                            # wrapper carries the array field's id
+  seq( [i32 x id0] [i32 y id1] )        # element 0 → wrapper-child id 0
+  seq( [i32 x id0] [i32 y id1] )        # element 1 → wrapper-child id 1
+  seq( [i32 x id0] [i32 y id1] )        # element 2 → wrapper-child id 2
+)                                       # element ids ARE the array indices; the inner
+                                        # id0/id1 are the struct's own field ids
 ```
 
 ### 5.3 General recursion
 
 Any element type composes the same way: encode the element exactly as it would be
-as a standalone field (leaf, scalar array, or sequence) and place it as a child
-(element id `0`) of the array's wrapper sequence. Each nesting level adds one
-sequence depth; the total stays within `MAX_DEPTH = 255`. There is no special case
-beyond "leaf / scalar-array vs. sequence."
+as a standalone field (leaf, scalar array, or sequence) and place it as a child of
+the array's wrapper sequence, at the child id equal to its array index (§5.1). Each
+nesting level adds one sequence depth; the total stays within `MAX_DEPTH = 255`.
+There is no special case beyond "leaf / scalar-array vs. sequence."
 
 ### 5.4 Maps and recursive types
 
