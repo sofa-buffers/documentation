@@ -203,10 +203,12 @@ The value is an unsigned varint. Example: field id `0`, value `0` → `00 00`
 (header `0x00`, value `0x00`). Field id `0`, value `127` → `00 7f`.
 
 **Booleans have no wire type of their own.** A boolean is simply an unsigned integer
-with the value `0` (false) or `1` (true). This mapping is the **code generator's**
-responsibility — the corelib never has a boolean type and only ever sees an unsigned
-integer. (The shared test vectors still carry a `boolean` op for readability; it encodes
-exactly as an unsigned `0`/`1`, e.g. `boolean true` at id `0` → `00 01`.)
+with the value `0` (false) or `1` (true). The **corelib must provide dedicated boolean
+read/write functions** that perform this mapping — writing a boolean emits the unsigned
+value `0`/`1`, and reading one interprets an unsigned field as a boolean. On the wire the
+result is indistinguishable from an unsigned integer. (The shared test vectors carry a
+`boolean` op accordingly; it encodes exactly as an unsigned `0`/`1`, e.g. `boolean true`
+at id `0` → `00 01`.)
 
 ### 4.5 Signed Integer (type `0b001`)
 
@@ -428,11 +430,11 @@ should be adapted to the language's conventions; semantics are fixed.
 **Encoder**
 * Initialize with an output sink (buffer + flush, or a stream/writer).
 * A **write** operation covering all scalar types: unsigned integer, signed integer,
-  fp32, fp64 *(optional/feature-gated)*, string (UTF-8, no null terminator on wire),
-  and blob. There is **no boolean type at the corelib level** — booleans are a generator
-  concept and travel as an unsigned integer `0`/`1` (see §4.4). If the language supports
-  overloading, a single `write(id, value)` dispatches on the value type; otherwise use
-  `write_<type>(id, value)` variants.
+  boolean, fp32, fp64 *(optional/feature-gated)*, string (UTF-8, no null terminator on
+  wire), and blob. **Boolean has no wire type** — the corelib's boolean write/read
+  functions map it to/from an unsigned integer `0`/`1` (see §4.4). If the language
+  supports overloading, a single `write(id, value)` dispatches on the value type;
+  otherwise use `write_<type>(id, value)` variants.
 * Array write covering unsigned-integer arrays, signed-integer arrays, and
   fixlen (fp32/fp64) arrays. Same overloading rule applies.
 * `sequence_begin(id)` and `sequence_end()` to open and close nested scopes.
