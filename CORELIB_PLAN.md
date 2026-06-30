@@ -577,34 +577,10 @@ the language's idiomatic convention — `tests/` in Rust and Python,
   The vector schema is documented alongside it in
   `corelib-c-cpp/assets/test_vectors_README.md`:
   <https://raw.githubusercontent.com/sofa-buffers/corelib-c-cpp/refs/heads/main/assets/test_vectors_README.md>
-* Vector file schema:
-  ```json
-  {
-    "format": "sofabuffers-test-vectors",
-    "version": 1,
-    "description": "...",
-    "notes": { ... },
-    "vectors": [
-      {
-        "name": "unsigned_0x7F",
-        "group": "scalar/unsigned",
-        "description": "Unsigned varint at field id 0 ...",
-        "offset": 0,
-        "fields": [ { "op": "unsigned", "id": 0, "value": 127 } ],
-        "serialized": { "length": 2, "hex": "007f" }
-      }
-    ]
-  }
-  ```
-* `fields[]` operations: `unsigned`, `signed`, `boolean` (carries `value: true|false`,
-  encoded as an unsigned `0`/`1`), `fp32`, `fp64`, `string`, `blob` (payload as
-  `value_hex`), `array` (with `element_type` such as `u8`/`i64`/`fp32` + `values`),
-  `sequence_begin` (carries `id`), `sequence_end`. A vector may also carry an optional
-  `requires` array (capabilities the vector needs, e.g. `["array"]`) and an optional
-  `skip_ids` array (field IDs the decode test should skip). `offset` is the encoder start
-  offset. Floats may appear as numbers or the string literals `"inf"`/`"-inf"`; `NaN` is
-  not representable in the JSON and never appears. Hex is lowercase; little-endian
-  throughout.
+* For the file's structure — top-level keys, the per-vector fields, the full list of
+  `fields[]` operations and their parameters, and how floats/blobs/offsets are
+  represented — follow the authoritative `test_vectors_README.md` linked above rather
+  than a copy here, so this plan can never drift from the generated format.
 * Vector categories to cover: scalars (unsigned/signed/bool/fp32/fp64/string/blob);
   field-ID boundaries (`0` and `2,147,483,647`); integer arrays (`u8..u64`, `i8..i64`);
   float arrays incl. special values (`±0`, `±inf`); sequences (nested, with scalars
