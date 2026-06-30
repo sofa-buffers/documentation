@@ -726,8 +726,8 @@ ready-to-use, reproducible development environment based on Docker and VS Code D
 |------|---------|
 | `Dockerfile` | Builds the container image: Ubuntu 24.04 base, language toolchain, GitHub CLI (`gh`), Node.js LTS, and Claude Code (`@anthropic-ai/claude-code`). |
 | `build.sh` | Builds the Docker image tagged as `<lang>-devcontainer` (e.g. `cpp-devcontainer`, `rust-devcontainer`). |
-| `start.sh` | Starts the container interactively, mounts the workspace and a named `claude-config` volume, and loads `.devcontainer/.env` via `--env-file` if the file exists (prints a warning when absent). |
-| `attach.sh` | Attaches an interactive `bash` shell to the already-running container. |
+| `start.sh` | Starts the container interactively, mounts the workspace and a named `claude-config` volume, and loads `.devcontainer/.env` via `--env-file` if the file exists (prints a warning when absent). Don't mix the container image name with the running constainer instance name. Name the instance `<repo-name>-dev` via the `--name` argument. |
+| `attach.sh` | Attaches an interactive `bash` shell to the already-running container with name `<repo-name>-dev`. |
 | `devcontainer.json` | VS Code Dev Containers configuration: references the `Dockerfile`, loads `.devcontainer/.env` via `runArgs`, and declares VS Code extensions — language-specific tools **plus** `anthropic.claude-code`. |
 | `.env.example` | Committed template listing all supported environment variables (at minimum `GH_TOKEN` for the `gh` CLI). Each variable must have a comment explaining its purpose and required scopes. |
 
