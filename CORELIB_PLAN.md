@@ -269,6 +269,12 @@ Length range `0 .. 2,147,483,647`. Fixlen subtypes:
 
 * `element_count` range `1 .. 2,147,483,647`. The count lets a decoder validate that the
   values fit the destination buffer, or skip the whole array element-by-element.
+* **An array is never empty on the wire** (`element_count` is always ≥ 1, here and for
+  fixlen arrays in §4.8). An empty collection is represented by **omitting the field
+  entirely**; the generated object defaults that field to an empty list — exactly how
+  protobuf treats empty repeated fields. There is intentionally no zero-count array form,
+  so "explicitly empty" and "absent" are indistinguishable, consistent with the format's
+  sparse, omit-the-default model.
 * Each element is an independent varint (unsigned) or zig-zag varint (signed); the
   byte length per element varies.
 * The declared element width on the API (8/16/32/64-bit) affects only how the
