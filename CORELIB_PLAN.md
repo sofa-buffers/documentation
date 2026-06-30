@@ -770,8 +770,8 @@ The Docker image tag and the running container name follow the pattern `<lang>-d
 | Repo | Image / container name |
 |------|------------------------|
 | `corelib-c-cpp` | `cpp-devcontainer` |
-| `corelib-rs` | `rust-devcontainer` |
-| `corelib-py` | `python-devcontainer` |
+| `corelib-rs` | `rs-devcontainer` |
+| `corelib-py` | `py-devcontainer` |
 | `corelib-ts` | `ts-devcontainer` |
 | `corelib-go` | `go-devcontainer` |
 | `corelib-java` | `java-devcontainer` |
