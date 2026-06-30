@@ -20,9 +20,17 @@ share one wire encoding — a struct and a union are both **sequences**; an enum
 a signed int are both **signed varints** — and the schema is what disambiguates
 them. Defining that lowering is the whole job of this document.
 
-Notation in the layout sketches: `[u32 id5]` = a field of that wire type at that
-id; `seq( … )` = a sequence (start … `0x07` end); identifiers are schema field
-names. We never spell out header bytes — that's CORELIB_PLAN's job.
+Notation in the layout sketches (read **left to right = wire order**):
+
+- `[id:type] name` — one field. The header comes first (its `id` and wire `type`,
+  packed into a single varint — CORELIB_PLAN §4.3), then its payload. The trailing
+  lowercase `name` is the schema field name, shown only for readability — **names
+  are never on the wire**.
+- `seq[id]( … )` — a sequence opened by a field with that `id`; `…` are its child
+  fields; it ends with the single byte `0x07`.
+
+So `[0:i32] x` is "field id 0, type i32 (the struct field called `x`)". Header
+bytes themselves are never spelled out — that's CORELIB_PLAN's job.
 
 ---
 
@@ -112,8 +120,10 @@ Structs nest arbitrarily (a struct field of `type: struct` is just another
 sequence), bounded by `MAX_DEPTH = 255`.
 
 ```
-somestruct: seq( [u8 nestedint id0]  [string nestedstring id1]
-                 nestedstruct: seq( [i32 deepint id0] ) )
+somestruct = seq[20](                  # wrapper id 20 = the struct field's id
+  [0:u8] nestedint   [1:str] nestedstring
+  seq[2]( [0:i32] deepint )             # nestedstruct — a nested sequence at id 2
+)
 ```
 
 ### 4.2 Union — `type: union`
@@ -129,7 +139,7 @@ Nothing special on the wire: the active option is just its normal encoding,
 placed as the single child.
 
 ```
-someunion, option2 (id1) active:  seq( [string id1] )
+someunion = seq[21]( [1:str] option2 )   # option2 (id 1) active; the id selects it
 ```
 
 ---
@@ -184,24 +194,27 @@ states. Skipping an unwanted array-of-composite nests through the same
 
 ### 5.2 The cases
 
+(`seq[k]` below is the array field itself, at its own id `k`; the children's ids
+`0,1,…` are the array indices.)
+
 | Case | Wire structure | Status |
 |------|----------------|--------|
 | **struct with arrays** | the struct is a sequence (§4.1); a child is a scalar array (§3) or array wrapper (below) | ✅ a struct field can be `type: array` |
-| **array of strings/blobs** | `seq( [string id0] [string id1] … )` — elements are fixlen values | ✅ schema routes string/blob items to a sequence |
-| **array of structs** | `seq( elem₀:seq(fields…) elem₁:seq(fields…) … )` | ✅ via recursive `items` (§6) |
-| **array of unions** | `seq( elem₀:seq(option) elem₁:seq(option) … )` | ✅ via recursive `items` |
-| **array of arrays** | `seq( elem₀:‹array› elem₁:‹array› … )` — each child is a scalar array or inner wrapper | ✅ via recursive `items` |
-| **map** = `array of struct{ key, value }` | a wrapper sequence of 2-field structs | ✅ a pattern, not a distinct type |
+| **array of strings/blobs** | `seq[k]( [0:str] [1:str] … )` — elements are fixlen values | ✅ schema routes string/blob items to a sequence |
+| **array of structs** | `seq[k]( seq[0](fields…) seq[1](fields…) … )` | ✅ via recursive `items` (§6) |
+| **array of unions** | `seq[k]( seq[0](option) seq[1](option) … )` | ✅ via recursive `items` |
+| **array of arrays** | `seq[k]( [0:arr]… seq[1](…) … )` — each child is a scalar array or inner wrapper | ✅ via recursive `items` |
+| **map** = `array of struct{ key, value }` | `seq[k]( seq[0]([0:str] key  [1:u32] val) … )` | ✅ a pattern, not a distinct type |
 
 Worked sketch — `points: array of struct{ x:i32, y:i32 }` (3 elements):
 
 ```
-points: seq(                            # wrapper carries the array field's id
-  seq( [i32 x id0] [i32 y id1] )        # element 0 → wrapper-child id 0
-  seq( [i32 x id0] [i32 y id1] )        # element 1 → wrapper-child id 1
-  seq( [i32 x id0] [i32 y id1] )        # element 2 → wrapper-child id 2
-)                                       # element ids ARE the array indices; the inner
-                                        # id0/id1 are the struct's own field ids
+points = seq[5](                     # the array field, at its own id 5
+  seq[0]( [0:i32] x  [1:i32] y )      # element 0 — wrapper-child id 0
+  seq[1]( [0:i32] x  [1:i32] y )      # element 1 — wrapper-child id 1
+  seq[2]( [0:i32] x  [1:i32] y )      # element 2 — wrapper-child id 2
+)
+# outer ids 0/1/2 = the array indices; inner ids 0/1 = the struct's own fields x/y
 ```
 
 ### 5.3 General recursion
