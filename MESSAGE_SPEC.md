@@ -17,20 +17,19 @@ The corelib knows only the eight wire types (CORELIB_PLAN §4.3); it has no noti
 of struct, union, enum, bitfield, or "array of structs". Those are schema
 concepts that the generated code lowers to wire primitives. Several schema types
 share one wire encoding — a struct and a union are both **sequences**; an enum and
-a signed int are both **signed varints** — and the schema is what disambiguates
-them. Defining that lowering is the whole job of this document.
+a signed int both use the **signed-integer** wire type — and the schema is what
+disambiguates them. Defining that lowering is the whole job of this document.
 
 Notation in the layout sketches (read **left to right = wire order**):
 
-- `[id:type] name` — one field. The header comes first (its `id` and wire `type`,
-  packed into a single varint — CORELIB_PLAN §4.3), then its payload. The trailing
-  lowercase `name` is the schema field name, shown only for readability — **names
-  are never on the wire**.
+- `[id:type] name` — one field. The header comes first (its `id` and wire `type`;
+  CORELIB_PLAN §4.3), then its payload. The trailing lowercase `name` is the schema
+  field name, shown only for readability — **names are never on the wire**.
 - `seq[id]( … )` — a sequence opened by a field with that `id`; `…` are its child
-  fields; it ends with the single byte `0x07`.
+  fields; the closing `)` stands for its sequence-end marker (CORELIB_PLAN §4.9).
 
-So `[0:i32] x` is "field id 0, type i32 (the struct field called `x`)". Header
-bytes themselves are never spelled out — that's CORELIB_PLAN's job.
+So `[0:i32] x` is "field id 0, type i32 (the struct field called `x`)". The exact
+header and marker bytes are never spelled out here — that's CORELIB_PLAN's job.
 
 ---
 
@@ -38,7 +37,7 @@ bytes themselves are never spelled out — that's CORELIB_PLAN's job.
 
 | YAML `type` | Wire type (CORELIB_PLAN) | Notes |
 |-------------|--------------------------|-------|
-| `u8` `u16` `u32` `u64` | unsigned integer (§4.4) | declared width is a **storage hint**; the wire is one unsigned varint regardless |
+| `u8` `u16` `u32` `u64` | unsigned integer (§4.4) | declared width is a **storage hint**; the wire carries a single unsigned integer regardless |
 | `i8` `i16` `i32` `i64` | signed integer (§4.5) | zig-zag |
 | `boolean` | unsigned integer (§4.4) | no own wire type; encoded as `0`/`1` via the corelib bool helper |
 | `enum` | signed integer (§4.5) | no own wire type; carries the member's value, signed 32-bit range |
@@ -67,8 +66,8 @@ A **message-layer** rule; the wire spec is deliberately unaware of it (CORELIB_P
 - **No presence / is-set bit** (proto3-style). The application gives the zero
   value meaning where needed — e.g. a command enum with `NONE = 0` whose handler
   does nothing.
-- **Empty ≠ absent.** The wire can now carry an explicit empty array
-  (`element_count = 0`) and an empty sequence (`start` immediately `0x07`), so:
+- **Empty ≠ absent.** The wire can now carry an explicit empty array and an empty
+  sequence (CORELIB_PLAN §4.7, §4.9), so:
   - *absent* → reconstructed as the default (which may be non-empty, e.g.
     `default: [3, 4]`);
   - *explicit empty* → the empty collection, overriding a non-empty default.
@@ -88,7 +87,7 @@ which is what keeps them compact:
 | `u8`…`u64`   | array of unsigned integers (§4.7) |
 | `i8`…`i64`   | array of signed integers (§4.7) |
 | `fp32` `fp64`| array of fixlen values (§4.8) |
-| `enum`       | array of **signed** integers (§4.7) — enum → signed varint |
+| `enum`       | array of **signed** integers (§4.7) — enum → signed integer |
 | `boolean`    | array of **unsigned** integers (§4.7) — bool → `0`/`1` |
 | `bitfield`   | array of **unsigned** integers (§4.7) — packed flag word per element |
 
@@ -97,12 +96,11 @@ types — they already lower to a single signed/unsigned int — so there is **n
 wire form** for them; only the schema must permit them as element types.
 
 - `count` in the schema is the array's **capacity** N — a sizing hint, **never on
-  the wire**. The wire's `element_count` is the **actual** number of elements, in
-  `0 .. N`; the decoder validates `≤ N`. `count` is **optional**, exactly like
-  `maxlen`: omit it for a dynamic/unbounded collection (heap targets); provide it
-  so heap-less targets can pre-size the buffer.
-- `element_count = 0` is a valid **explicit empty array** (CORELIB_PLAN §4.7); for
-  a float array, count 0 means no `fixlen_word` follows (§4.8).
+  the wire**. The wire carries the **actual** number of elements, `0 .. N`
+  (CORELIB_PLAN §4.7); the decoder validates `≤ N`. `count` is **optional**, exactly
+  like `maxlen`: omit it for a dynamic/unbounded collection (heap targets); provide
+  it so heap-less targets can pre-size the buffer.
+- A zero-length array is valid — an **explicit empty array** (CORELIB_PLAN §4.7–4.8).
 
 ---
 
@@ -154,20 +152,20 @@ The single rule that covers every remaining case:
 > array) — so element boundaries are unambiguous.
 
 Such a wrapper carries **no count field**: its elements are delimited by the
-sequence end (`0x07`), in contrast to the compact scalar arrays of §3, which
-prefix an `element_count`. (Both forms are "arrays"; they differ only in how the
-length is recovered — a prefix count vs. a delimiter.)
+sequence end, in contrast to the compact scalar arrays of §3, which carry a count
+prefix. (Both forms are "arrays"; they differ only in how the length is recovered —
+a prefix count vs. a delimiter.)
 
 Why a wrapper sequence and not "the same field id repeated" (protobuf `repeated`):
 only the wrapper can represent an **explicit empty** array (an empty wrapper
-sequence), staying consistent with the `element_count = 0` scalar form (§2).
+sequence), staying consistent with the empty-array form (§2, §3).
 
 ### 5.1 Element identity inside an array wrapper (normative)
 
 A wrapper sequence is an **ordinary sequence**, so — exactly like the C decoder's
 state machine — **every element is a normal field with its own `(id, type)`
 header**. After the wrapper's `sequence start` the decoder is back in its idle
-state and reads one field header per element until the `0x07` end. There is **no
+state and reads one field header per element until the sequence end. There is **no
 header-less element form here**; the only header-less elements are the compact
 scalar arrays of §3, which are a different wire type with their own count-driven
 decode states.
@@ -180,15 +178,15 @@ counter. Elements appear in ascending index order. (Languages with 1-based array
 e.g. Lua, apply the +1 offset in their binding; the wire is always 0-based.)
 
 Consequences:
-- The header follows the id: indices `0..15` keep a **one-byte** header; from index
-  `16` it is two bytes, from `2048` three, etc. (`varint((id<<3)|type)`). Only
+- The element header grows with the id: small indices stay compact, larger ones
+  cost an extra header byte or two (CORELIB_PLAN §4.3 for the header encoding). Only
   composite/sequence arrays pay this — the compact scalar arrays of §3 carry no
   per-element headers — and since composite elements are already framed, the growth
   is modest.
 - Array length is bounded by `ID_MAX` (INT32_MAX), the same range as the capacity.
 
 The wrapper sequence carries the array field's own `id` in its parent scope; an
-empty wrapper (`start` immediately `0x07`) is the explicit empty array.
+empty wrapper (a sequence with no children) is the explicit empty array.
 
 **Decoder cost (minimal-footprint targets).** Array-of-composite needs **no new
 decoder state**: it reuses the existing idle + sequence-push/pop + leaf states, so
@@ -234,7 +232,7 @@ There is no special case beyond "leaf / scalar-array vs. sequence."
 
 **Map** — there is no distinct map type; a map is `array of struct{ key, value }`
 (a wrapper sequence of two-field structs). Being a sequence-form array it carries
-**no length field**: entries are delimited by the sequence end (`0x07`), each at
+**no length field**: entries are delimited by the sequence end, each at
 its index id (§5.1). Schema `count` is therefore just an optional **capacity** hint
 (§3) — a heap target omits it for an unbounded map; a heap-less target supplies it
 to pre-size. A "fixed length" is never baked into a map.
