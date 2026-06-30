@@ -112,7 +112,7 @@ This data was used to keep the overhead for frequently used types as low as poss
 ### Array of ...
 
 * The ID is followed by the **number of array elements**.
-* Array sizes are in the range `1 .. INT32_MAX`. An array is never empty on the wire; an empty collection is represented by omitting the field entirely (as with protocol buffers' repeated fields).
+* Array sizes are in the range `0 .. INT32_MAX`. A count of `0` is a valid, explicit empty array on the wire (header followed by a zero count, no elements). The wire format does not define how an explicit empty array relates to an absent field — that distinction is a code-generator concern.
 * This information is used by the parser to check whether all values fit into the target buffer.
 * If the receiver is not interested in the field, the parser can skip the elements based on the number.
 
@@ -134,6 +134,7 @@ This data was used to keep the overhead for frequently used types as low as poss
 #### Array of Fixlen Values
 
 * The number of elements is followed by the **Fixlen length information**, which applies to all elements.
+* If the number of elements is `0`, no Fixlen length information and no payload follow — the field is just the header and a zero count.
 * Arrays of dynamic types (UTF-8, BLOB) are not allowed; instead a sequence should be used for dynamic arrays.
 * The following payload data is treated as consecutive fixlen values.
 
@@ -146,6 +147,7 @@ This data was used to keep the overhead for frequently used types as low as poss
   * Arrays with a dynamic number of elements
   * Arrays of variable-length elements, e.g. strings or blobs (each element may have a different length). Blobs behave just like strings — both are dynamic byte payloads.
   * Tagged unions ("exactly one of") — the union opens a sequence carrying at most one child, and the **id of that single field** identifies the active option. A struct and a union look identical on the wire; the schema tells them apart.
+* An **empty sequence** (a sequence start immediately followed by its end marker) is legal and must be accepted by the decoder; it is the composite-type counterpart of a zero-count array — how an explicitly empty dynamic array, string/blob array, or other sequence-modeled collection is encoded.
 * Sequences may nest up to a maximum depth of **255**; a decoder must reject deeper nesting as a malformed message.
 
 ### Sequence End
