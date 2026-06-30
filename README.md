@@ -9,7 +9,7 @@
 
 SofaBuffers is a binary format for serializing and deserializing complex messages consisting of multiple fields, arrays, and nested structures.
 
-See [`BENCH_SPEC.md`](BENCH_SPEC.md) for the cross-language benchmark specification — the shared workloads, data, timing rules, and output format that every `corelib-*` implementation must follow so the numbers are directly comparable.
+See [`CORELIB_PLAN.md`](CORELIB_PLAN.md) for the language-independent corelib implementation plan — the complete wire format, streaming model, API contract, testing, and benchmark requirements that every `corelib-*` implementation must follow.
 
 ## Media Type
 

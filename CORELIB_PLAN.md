@@ -692,45 +692,20 @@ libraries reads consistently.
 
 ## 10. Performance Testing
 
-Every `corelib-*` repo provides **two** benchmark tools, located in the language's
-idiomatic benchmark folder — the folder name follows the language standard
-(`benches/` in Rust, `cmd/perfbench/` in Go, a benchmark module in
-Python/Java/C#, etc.). Both must exercise the **same reference workloads** so numbers
-are comparable across languages:
+Every `corelib-*` repo ships **two** benchmark tools, in the language's idiomatic
+benchmark folder (`benches/` in Rust, `cmd/perfbench/` in Go, a benchmark module in
+Python/Java/C#, etc.):
 
-* a large integer array (e.g. a 1000-element `u64` array), and
-* a "typical message" mixing scalars of various widths, integer arrays, floats,
-  strings, and nested sequences.
+* **`perf`** — CPU-speed-independent per-op cost (cycles/op via a hardware cycle counter
+  where available, or instruction count under a profiler). Answers "how good is the
+  implementation?" — machine-neutral.
+* **`bench`** — practical throughput on the current machine, in MB/s. Answers "how fast
+  is it here, right now?".
 
-### 10.1 `perf` — CPU-speed-independent
-
-Measures the **intrinsic cost of the code**, independent of the host's clock speed,
-so results are comparable across machines and languages. Two acceptable techniques:
-
-* **Hardware cycle counters** (x86 TSC, AArch64 virtual count register) reporting
-  **cycles per operation** over an adaptive ~1 s CPU-time loop — "tracks work (CPU
-  cycles), not seconds."
-* **Instruction counting under a profiler** (e.g. Callgrind) — expose non-inlined
-  single-shot entry points (one operation per process invocation) so the profiler
-  counts instructions while excluding setup overhead. This is useful for languages
-  where hardware counters are not accessible.
-
-Output: cycles-per-op (or instruction count) for encode and decode of each workload.
-
-### 10.2 `bench` — throughput on the current machine (MB/s)
-
-Measures **practical throughput on the machine it runs on**, reported in **MB/s**
-(where MB = 1,000,000 bytes):
-
-* Time against **process CPU time** (`clock()` / equivalent) or, where idiomatic,
-  wall-clock `time` mode — excluding OS scheduling noise where possible.
-* Warm up once, then repeat the operation until ~1 s of CPU time elapses.
-* `throughput_MBps = (bytes_per_op × iterations) / elapsed_seconds / 1e6`.
-* Print a small table: workload × {encode, decode} → MB/s, with a note that
-  MB = 1e6 bytes and each measurement spans ~1 s.
-
-> Rule of thumb: `perf` answers "how good is the implementation?" (machine-neutral);
-> `bench` answers "how fast is it here, right now?" (MB/s on this CPU).
+The **exact workloads, datasets, timing rules, throughput formula, and output grammar
+are specified in [`BENCH_SPEC.md`](BENCH_SPEC.md) — the single source of truth** for the
+cross-language benchmark suite. Both tools must follow it so the numbers are directly
+comparable across languages; do not redefine workloads, timing, or output format here.
 
 ---
 
