@@ -72,6 +72,7 @@ This data was used to keep the overhead for frequently used types as low as poss
 * The ID is followed by at least one byte of **varint-encoded unsigned integers**.
 * The parser requires a temporary 64-bit buffer for sequential decoding of the stream.
 * If the receiver is interested in the field, the value is then written to the destination buffer as an **unsigned** value.
+* **Booleans** have no dedicated wire type — they are encoded exactly as unsigned integers with the value `0` (false) or `1` (true). The corelib provides boolean read/write helpers for this mapping; on the wire a boolean is indistinguishable from an unsigned integer.
 
 ### Signed Integer
 
@@ -105,11 +106,12 @@ This data was used to keep the overhead for frequently used types as low as poss
 
 * The **Fixlen length information** is followed by the payload data corresponding to the specified length.
 * For IEEE754 types, the endianness must be converted correctly to **Little Endian** depending on the system.
+* IEEE754 values are stored as their raw little-endian bytes, so every value — including ±0, ±inf, and NaN — round-trips bit-for-bit.
 
 ### Array of ...
 
 * The ID is followed by the **number of array elements**.
-* Array sizes are in the range `1 .. INT32_MAX`.
+* Array sizes are in the range `1 .. INT32_MAX`. An array is never empty on the wire; an empty collection is represented by omitting the field entirely (as with protocol buffers' repeated fields).
 * This information is used by the parser to check whether all values fit into the target buffer.
 * If the receiver is not interested in the field, the parser can skip the elements based on the number.
 
@@ -142,8 +144,9 @@ This data was used to keep the overhead for frequently used types as low as poss
   * Nested structures
   * Arrays with a dynamic number of elements
   * Arrays of variable-length elements, e.g. strings or blobs (each element may have a different length). Blobs behave just like strings — both are dynamic byte payloads.
+* Sequences may nest up to a maximum depth of **255**; a decoder must reject deeper nesting as a malformed message.
 
-### Sequence Stop
+### Sequence End
 
 * This special type has no ID (value = 0).
 * It signals the end of a sequence, so that the following fields belong to the parent sequence again.

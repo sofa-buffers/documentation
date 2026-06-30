@@ -1,6 +1,6 @@
 <p align="center"><img src="assets/sofabuffers_logo.png" alt="SofaBuffers" height="140"></p>
 
-# SofaBuffers — Architecture & Implementation Guide
+# SofaBuffers — Corelib Implementation Plan
 
 <b>Structured Objects For Anyone</b><br>
 <i>... so optimized, feels amazing.</i>
@@ -14,17 +14,19 @@ existing implementation.
 It covers:
 
 1. The idea behind the protocol.
-2. The complete binary wire format (byte level).
-3. The streaming model — the reason SofaBuffers exists.
-4. A language-independent API contract — including the **generated-object layer**.
-5. Recommended language-idiomatic design patterns.
-6. Mandatory unit testing using the shared test vectors.
-7. The `assets/` requirement.
-8. The README format every `corelib-*` repository must follow.
-9. The performance-testing requirement (`perf` + `bench` tools).
-10. A devcontainer for local development.
-11. GitHub Actions workflows (CI + docs).
-12. A conformance checklist.
+2. The reference repositories and the shared test-vector source of truth.
+3. The core concepts — fields, IDs, scopes, and sequences.
+4. The complete binary wire format (byte level).
+5. The streaming model — the reason SofaBuffers exists — and the recommended
+   language-idiomatic patterns.
+6. A language-independent API contract — including the **generated-object layer**.
+7. Mandatory unit testing using the shared test vectors.
+8. The `assets/` requirement.
+9. The README format every `corelib-*` repository must follow.
+10. The performance-testing requirement (`perf` + `bench` tools).
+11. A devcontainer for local development.
+12. GitHub Actions workflows (CI + docs).
+13. A conformance checklist.
 
 ---
 
@@ -452,8 +454,8 @@ should be adapted to the language's conventions; semantics are fixed.
 * Per-field: **read** the value into a typed destination, or **skip**. If the language
   supports overloading a single `read(destination)` suffices; otherwise use
   `read_<type>(destination)` variants.
-* Descend into nested sequences with a child handler; auto-skip of unread fields and
-  whole sub-sequences.
+* Descend into nested sequences with a child handler (e.g. `read_sequence`); auto-skip
+  of unread fields and whole sub-sequences.
 
 ### 6.1 Two Audiences: Direct corelib Use vs. Generated Objects
 
@@ -576,8 +578,8 @@ the language's idiomatic convention — `tests/` in Rust and Python,
 
 ### 7.1 Use the Shared Test Vectors
 
-* Copy **`test_vectors.json`** from `corelib-c-cpp` into the new repo under the
-  language-idiomatic test resources folder. Do **not** hand-write a divergent copy —
+* Copy **`test_vectors.json`** from `corelib-c-cpp` into the new repo's `assets/` folder
+  (see §8); the test suite reads it from there. Do **not** hand-write a divergent copy —
   `corelib-c-cpp` **generates** these vectors and is their source of truth:
   <https://raw.githubusercontent.com/sofa-buffers/corelib-c-cpp/refs/heads/main/assets/test_vectors.json>
   The vector schema is documented alongside it in
@@ -904,7 +906,8 @@ A new `corelib-<lang>` is conformant when:
       path (§6.1).
 - [ ] All shared **test vectors** pass for both encode and decode, plus chunked,
       roundtrip, malformed, and skip tests (§7).
-- [ ] `assets/` copied from the `documentation` repository (§8).
+- [ ] `assets/` populated per §8 — branding from `documentation`, `test_vectors.json`
+      from `corelib-c-cpp`.
 - [ ] README follows the family format with badges and the required sections (§9).
 - [ ] `perf` (CPU-independent) and `bench` (MB/s) tools present and runnable (§10).
 - [ ] `.devcontainer/` folder present with `Dockerfile`, `build.sh`, `start.sh`, `attach.sh`,
