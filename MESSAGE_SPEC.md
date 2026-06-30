@@ -149,13 +149,30 @@ sequence), staying consistent with the `element_count = 0` scalar form (§2).
 
 ### 5.1 Element identity inside an array wrapper (normative)
 
-Elements are **positional** — the decoder collects children in wire order. Every
-element child uses the **fixed conventional id `0`**; the decoder uses position,
-not the id. (This intentionally relaxes the "unique ids per scope" expectation
-that applies to structs — for an array the repeated id *is* the array.) A fixed id
-keeps element headers one byte and imposes no length cap. The wrapper sequence
-carries the array field's own `id` in its parent scope; an empty wrapper is the
-explicit empty array.
+A wrapper sequence is an **ordinary sequence**, so — exactly like the C decoder's
+state machine — **every element is a normal field with its own `(id, type)`
+header**. After the wrapper's `sequence start` the decoder is back in its idle
+state and reads one field header per element until the `0x07` end. There is **no
+header-less element form here**; the only header-less elements are the compact
+scalar arrays of §3, which are a different wire type with their own count-driven
+decode states.
+
+Each element child carries the **fixed conventional id `0`**; the generated layer
+assigns elements by **position**, not by id. (This intentionally relaxes the
+"unique ids per scope" rule that applies to structs — for an array the repeated id
+*is* the array.) A fixed id keeps each element header one byte and imposes no
+length cap. The corelib reports each element header like any other field and does
+not enforce id uniqueness; mapping the id-`0` children to array slots is the
+generated code's job. The wrapper sequence carries the array field's own `id` in
+its parent scope; an empty wrapper (`start` immediately `0x07`) is the explicit
+empty array.
+
+**Decoder cost (minimal-footprint targets).** Array-of-composite needs **no new
+decoder state**: it reuses the existing idle + sequence-push/pop + leaf states, so
+a deeper element type (struct/union/array/string/blob) adds **zero `.text`** to
+the decoder. Only the compact scalar arrays of §3 use the dedicated array-count
+states. Skipping an unwanted array-of-composite nests through the same
+`skip_depth` mechanism, bounded by `MAX_DEPTH = 255`.
 
 ### 5.2 The cases
 
