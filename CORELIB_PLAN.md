@@ -120,7 +120,7 @@ overall length header.
     have a different length). Blobs behave just like strings here — both are
     dynamic byte payloads.
   * tagged unions ("exactly one of") — the single field present identifies the
-    active option (see §4.9.1).
+    active option.
 * **Scope** — each sequence opens a fresh ID namespace; child IDs never collide with
   parent IDs.
 
@@ -317,34 +317,17 @@ sequence end:    [ 0x07 ]      // (id = 0) << 3 | 0b111  ==  0x07, a single byte
 * Because the end is a marker (not a length), an encoder can stream a sequence of
   unknown size. A decoder that wants to skip a sequence must walk it to its matching
   end, descending into nested sequences and tracking depth.
-* That single primitive (a fresh scope) is enough to model: nested structures,
+* That single primitive (a fresh scope) is enough to model nested structures,
   dynamically sized arrays, arrays of variable-length elements such as strings
   or blobs (anything where each element may have a different length; blobs are
-  treated just like strings), and **tagged unions** (see §4.9.1).
+  treated just like strings), and tagged unions. These are all schema-level uses
+  the corelib needn't distinguish — each is just a sequence on the wire. (For
+  context only: a struct's children fill its scope; a tagged union puts its one
+  active option in the scope as the single child, so that child's id selects the
+  option.)
 * **Maximum nesting depth is 255** (`MAX_DEPTH`, §6.2). An encoder must not open more
   than 255 nested sequences; a decoder must reject a message that nests deeper with an
   `InvalidMessage` error rather than risk unbounded recursion / stack growth.
-
-### 4.9.1 Structs and Unions on the Wire
-
-Higher-level aggregates lower onto the sequence primitive — they are **not** separate
-wire types:
-
-* A **struct** (nested message) is a sequence: `sequence_start(id)`, its child fields in
-  their own fresh id scope, then `sequence_end`.
-* A **union** ("exactly one of") is also a sequence opening a fresh id scope, but it
-  carries **at most one** child — the active option, written under that option's id. The
-  child's **id is the discriminator**: the decoder learns which option is active purely
-  from the id of the single field it finds. If the sequence is empty (the active option
-  is the schema-designated default and was elided by sparse encoding), the decoder falls
-  back to the union's default option (`default_id`). More than one child in a union
-  sequence is malformed (`InvalidMessage`).
-
-Because both are sequences, **a struct and a union are indistinguishable on the wire** —
-the field's declared type in the schema is what tells them apart; the bytes never do.
-Struct/union framing is **always emitted** (sequences are not subject to the sparse
-"omit a field equal to its default" optimization; only the scalar fields *inside* them
-may be elided when equal to their defaults).
 
 ### 4.10 Worked Example
 
