@@ -20,6 +20,11 @@ share one wire encoding — a struct and a union are both **sequences**; an enum
 a signed int both use the **signed-integer** wire type — and the schema is what
 disambiguates them. Defining that lowering is the whole job of this document.
 
+The *authoring* format itself (field attributes, enum/bitfield/union definitions)
+and the *validation contract* live in the generator's
+[`schema/README.md`](https://github.com/sofa-buffers/generator/blob/main/schema/README.md);
+the wire bytes live in [`CORELIB_PLAN.md`](./CORELIB_PLAN.md).
+
 Notation in the layout sketches (read **left to right = wire order**):
 
 - `[id:type] name` — one field. The header comes first (its `id` and wire `type`;
