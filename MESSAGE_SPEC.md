@@ -65,9 +65,20 @@ A **message-layer** rule; the wire spec is deliberately unaware of it (CORELIB_P
 
 - **Init to defaults.** A new message has every field at its schema `default` (or
   the type's zero value when none is given; a union uses `default_id`).
-- **Sparse encoding.** The encoder emits a field **iff its value ≠ its default**;
-  an omitted field is reconstructed as the default. (A `u8` left at default `7`
-  never appears on the wire.)
+- **Sparse encoding (mandatory, canonical).** The encoder **MUST** emit a field
+  **iff its value ≠ its default**; an omitted field is reconstructed as the
+  default. (A `u8` left at default `7` never appears on the wire.) There is **no
+  dense mode** — so every message value has exactly **one** canonical encoding.
+- **The ≠-default test is per field — except for a `sequence`.** A `sequence`
+  (a `struct` or `union`, and the wrapper form of a composite/dynamic-element
+  array — §5, §6) is **never omitted as a whole**. It is **always framed** with
+  `sequence_begin`/`sequence_end`, and the ≠-default test is applied
+  **recursively to its child fields**. A nested object all of whose fields equal
+  their default is therefore emitted as an **empty wrapper sequence** (the two
+  bytes `sequence_begin(id)` + `sequence_end`), **not** dropped. *Rationale:* a
+  whole-object comparison would depend on struct padding and in-memory layout and
+  could not be reproduced identically across languages; a per-field rule is
+  portable and keeps the encoding canonical.
 - **No presence / is-set bit** (proto3-style). The application gives the zero
   value meaning where needed — e.g. a command enum with `NONE = 0` whose handler
   does nothing.
