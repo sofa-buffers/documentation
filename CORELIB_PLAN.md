@@ -296,9 +296,15 @@ Length range `0 .. 2,147,483,647`. Fixlen subtypes:
 * A **single** `fixlen_word` describes the subtype and the **per-element byte
   length**, which applies to **all** elements.
 * Payload is `element_count × element_length` contiguous bytes.
-* When `element_count == 0` the array is empty: **no `fixlen_word` and no payload
-  follow** — the field is exactly `[ header_varint ] [ element_count_varint = 0 ]`. (A
-  trailing `fixlen_word` would otherwise be meaningless for zero elements.)
+* When `element_count == 0` the array is empty: the `fixlen_word` is **still
+  present** (there is no payload) — the field is exactly `[ header_varint ]
+  [ element_count_varint = 0 ] [ fixlen_word ]`. The `fixlen_word` is kept even
+  though there are no elements so that an empty `fp32` array and an empty `fp64`
+  array stay **distinguishable on the wire**; without it both would be
+  `[ header ][ count = 0 ]` and a decoder that infers the element subtype from the
+  wire could not tell them apart. (Integer arrays, §4.7, have no `fixlen_word` at
+  all — their element width is an API concern — so an empty integer array is just
+  `[ header ][ count = 0 ]`.)
 * Only fixed-width subtypes are allowed here (`fp32`, `fp64`). **Dynamic subtypes
   (string, blob) are NOT allowed in a fixlen array** — to model an array of strings
   or variable blobs, use a sequence (see §4.9).

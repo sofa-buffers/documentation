@@ -106,6 +106,13 @@ wire form** for them; only the schema must permit them as element types.
   like `maxlen`: omit it for a dynamic/unbounded collection (heap targets); provide
   it so heap-less targets can pre-size the buffer.
 - A zero-length array is valid — an **explicit empty array** (CORELIB_PLAN §4.7–4.8).
+  A **fixlen** array (`fp32`/`fp64`) **still carries its `fixlen_word`** (the element
+  subtype/width) even when empty: `[ header ][ count = 0 ][ fixlen_word ]`, with no
+  payload. This is required so an empty `fp32` array and an empty `fp64` array stay
+  **distinguishable on the wire** — without it both would be `[ header ][ count = 0 ]`
+  and a decoder that infers the element type from the wire could not tell them apart.
+  Integer arrays carry **no** `fixlen_word` (their element width is an API concern,
+  never on the wire), so an empty integer array is simply `[ header ][ count = 0 ]`.
 
 ---
 
