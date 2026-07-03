@@ -731,9 +731,7 @@ ready-to-use, reproducible development environment based on Docker and VS Code D
 | File | Purpose |
 |------|---------|
 | `Dockerfile` | Builds the container image: Ubuntu 24.04 base, language toolchain, GitHub CLI (`gh`), Node.js LTS, and Claude Code (`@anthropic-ai/claude-code`). |
-| `build.sh` | Builds the Docker image tagged as `<lang>-devcontainer` (e.g. `cpp-devcontainer`, `rust-devcontainer`). |
-| `start.sh` | Starts the container interactively, mounts the workspace and a named `claude-config` volume, and loads `.devcontainer/.env` via `--env-file` if the file exists (prints a warning when absent). Don't mix the container image name with the running constainer instance name. Name the instance `<repo-name>-dev` via the `--name` argument. |
-| `attach.sh` | Attaches an interactive `bash` shell to the already-running container with name `<repo-name>-dev`. |
+| `start.sh` | Starts the container interactively, mounts the workspace and a named `claude-config` volume, and loads `.devcontainer/.env` via `--env-file` if the file exists (prints a warning when absent). |
 | `devcontainer.json` | VS Code Dev Containers configuration: references the `Dockerfile`, loads `.devcontainer/.env` via `runArgs`, and declares VS Code extensions — language-specific tools **plus** `anthropic.claude-code`. |
 | `.env.example` | Committed template listing all supported environment variables (at minimum `GH_TOKEN` for the `gh` CLI). Each variable must have a comment explaining its purpose and required scopes. |
 
@@ -750,21 +748,7 @@ ready-to-use, reproducible development environment based on Docker and VS Code D
 > opening the project as a Dev Container in VS Code. Copy `.env.example` → `.env` first — even
 > with all values empty — to satisfy this requirement.
 
-### 11.3 Container Naming
-
-The Docker image tag and the running container name follow the pattern `<lang>-devcontainer`:
-
-| Repo | Image / container name |
-|------|------------------------|
-| `corelib-c-cpp` | `cpp-devcontainer` |
-| `corelib-rs` | `rs-devcontainer` |
-| `corelib-py` | `py-devcontainer` |
-| `corelib-ts` | `ts-devcontainer` |
-| `corelib-go` | `go-devcontainer` |
-| `corelib-java` | `java-devcontainer` |
-| `corelib-cs` | `cs-devcontainer` |
-
-### 11.4 VS Code Extensions (`devcontainer.json`)
+### 11.3 VS Code Extensions (`devcontainer.json`)
 
 `devcontainer.json` must declare at minimum:
 
@@ -909,7 +893,7 @@ A new `corelib-<lang>` is conformant when:
       from `corelib-c-cpp`.
 - [ ] README follows the family format with badges and the required sections (§9).
 - [ ] `perf` (CPU-independent) and `bench` (MB/s) tools present and runnable (§10).
-- [ ] `.devcontainer/` folder present with `Dockerfile`, `build.sh`, `start.sh`, `attach.sh`,
+- [ ] `.devcontainer/` folder present with `Dockerfile`, `start.sh`,
       `devcontainer.json`, and `.env.example`; `devcontainer.json` lists language-appropriate
       extensions and `anthropic.claude-code`; `.devcontainer/.env` is gitignored (§11).
 - [ ] `ci.yml` builds and tests on push and PR; matrix across runtime versions used
