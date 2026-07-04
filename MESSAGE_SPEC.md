@@ -79,16 +79,44 @@ A **message-layer** rule; the wire spec is deliberately unaware of it (CORELIB_P
   whole-object comparison would depend on struct padding and in-memory layout and
   could not be reproduced identically across languages; a per-field rule is
   portable and keeps the encoding canonical.
+- **Sparse omission reaches into wrapper-array elements (leaf elements only).**
+  A wrapper-sequence array (§5) *is* a sequence and its elements *are* its child
+  fields (`id = index`, §5.1), so the per-field rule above applies to them with no
+  new machinery:
+  - a **`string`/`blob` element is a leaf field**, so it **MUST be omitted iff it
+    equals its element default**. The encoder drops it; the decoder restores the
+    missing `dest[id]` from the element default. This is the only place an array
+    element leaves an id **gap** on the wire. (A decoder still accepts a present,
+    default-valued element for robustness, but a conformant encoder never emits
+    one — so the encoding stays canonical.)
+  - a **`struct`/`union`/nested-array element is itself a sequence**, so the
+    carve-out above governs it: **always framed, never omitted**, even when all its
+    fields equal their defaults; its interior follows the per-field rule
+    recursively.
+
+  A wrapper array is therefore, on the wire, **indistinguishable from a struct
+  whose default-valued fields are omitted** — it is the same rule, not an analogy.
+  **Scope:** this reaches *only* sequence-form arrays (§5). The compact scalar
+  arrays of §3 are serialized linearly and in full — their elements carry no
+  `(id, type)` header, so sparse omission never applies to them.
 - **No presence / is-set bit** (proto3-style). The application gives the zero
   value meaning where needed — e.g. a command enum with `NONE = 0` whose handler
   does nothing.
-- **Empty ≠ absent.** The wire can now carry an explicit empty array and an empty
-  sequence (CORELIB_PLAN §4.7, §4.9), so:
+- **Empty ≠ absent — at the *array* level.** The wire can now carry an explicit
+  empty array and an empty sequence (CORELIB_PLAN §4.7, §4.9), so:
   - *absent* → reconstructed as the default (which may be non-empty, e.g.
     `default: [3, 4]`);
   - *explicit empty* → the empty collection, overriding a non-empty default.
 
   This is what enables a faithful JSON `[]` ↔ SofaBuffers round-trip.
+
+  At the **element** level the sparse rule above gives the opposite: inside a
+  wrapper array a default-valued `string`/`blob` element is **indistinguishable
+  from an absent one** (both reconstruct to the element default). Trailing default
+  elements therefore collapse — `["a", ""]` encodes exactly like `["a"]`, and an
+  all-default array such as `["", ""]` encodes exactly like the empty wrapper `[]`.
+  This is intentional and round-trips losslessly against a default-initialised
+  destination (§5.1).
 
 ---
 
@@ -124,6 +152,13 @@ wire form** for them; only the schema must permit them as element types.
   and a decoder that infers the element type from the wire could not tell them apart.
   Integer arrays carry **no** `fixlen_word` (their element width is an API concern,
   never on the wire), so an empty integer array is simply `[ header ][ count = 0 ]`.
+- **No sparse elements here.** A compact scalar array is serialized **linearly and
+  in full**: the count prefix is the actual element number, and each of those
+  elements is present in order with no per-element header — there is nothing to
+  omit. The sparse per-element omission (§2, §5.1) applies **only** to
+  wrapper-sequence arrays (string/blob/struct/union elements), never to these
+  count-prefixed forms. A default-valued *scalar element* stays on the wire; only
+  the array as a whole follows the ordinary ≠-default field test of §2.
 
 ---
 
@@ -197,8 +232,10 @@ decode states.
 id `1`, and so on, so on the wire **id ≡ array index**. This keeps the ids unique
 within the wrapper scope (the "unique ids per scope" rule holds, no exception), and
 the generated code can place each element directly at `dest[id]` without a separate
-counter. Elements appear in ascending index order. (Languages with 1-based arrays,
-e.g. Lua, apply the +1 offset in their binding; the wire is always 0-based.)
+counter. Elements appear in ascending index order, but the id sequence **may
+contain gaps**: a `string`/`blob` element equal to its default is omitted (§2), so
+ids such as `0, 2, 3` are well-formed — not an error. (Languages with 1-based
+arrays, e.g. Lua, apply the +1 offset in their binding; the wire is always 0-based.)
 
 Consequences:
 - The element header grows with the id: small indices stay compact, larger ones
@@ -217,6 +254,20 @@ a deeper element type (struct/union/array/string/blob) adds **zero `.text`** to
 the decoder. Only the compact scalar arrays of §3 use the dedicated array-count
 states. Skipping an unwanted array-of-composite nests through the same
 `skip_depth` mechanism, bounded by `MAX_DEPTH = 255`.
+
+**Sparse elements & default reconstruction (normative).** A `string`/`blob`
+element equal to its element default is **not** written (§2); its id is simply
+absent from the wrapper (`struct`/`union`/nested-array elements are sequences and
+are always present, so they never create a gap). Before applying a wrapper array a
+decoder **MUST** initialise every destination slot to its element default — a
+target pre-sized to the schema `count`/`maxlen` on heap-less profiles, or a fresh
+buffer sized to the transmission — then write each present element at `dest[id]`,
+leaving absent ids at their default. **Array length** is recovered as that
+pre-sized capacity, or, for a dynamically sized target, as *highest present id + 1*;
+trailing default elements are therefore indistinguishable from a shorter array
+(§2) — by design, and lossless against a default-initialised destination. A decoder
+**MUST** accept these gaps; when the element type has no default, supplying a
+cleanly initialised destination is the application's responsibility.
 
 ### 5.2 The cases
 
@@ -242,6 +293,27 @@ points = seq[5](                     # the array field, at its own id 5
 )
 # outer ids 0/1/2 = the array indices; inner ids 0/1 = the struct's own fields x/y
 ```
+
+Worked byte example — a **sparse `string` element** (the issue-#6 case). Array
+`tags: array of string` at id `5`, element default `""`, value `["A", "", "C"]`;
+element 1 equals the default and is therefore omitted:
+
+```
+5:seq          2E        sequence start, id 5   = (5<<3)|0b110
+  0:str "A"    02 0A 41  elem id 0: header (0<<3)|2 ; fixlen_word (1<<3)|2 ; 'A'
+  (1 omitted)            elem id 1 == default "" → not written
+  2:str "C"    12 0A 43  elem id 2: header (2<<3)|2 ; fixlen_word (1<<3)|2 ; 'C'
+  end          07        sequence end
+```
+
+→ `2E 02 0A 41 12 0A 43 07` (8 bytes). The decoder restores `dest[1] = ""` from the
+element default; the recovered array is `["A", "", "C"]`.
+
+Written densely instead (the pre-clarification behaviour), element 1's header plus
+its empty `fixlen_word` — the two bytes **`0A 02`** — would sit between `41` and
+`12`, giving `2E 02 0A 41 0A 02 12 0A 43 07` (10 bytes). That 2-byte-per-default
+delta, present-but-empty vs. omitted, is exactly what issue #6 resolved: the sparse
+form is now the single canonical encoding.
 
 ### 5.3 General recursion
 
