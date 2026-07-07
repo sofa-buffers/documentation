@@ -661,41 +661,105 @@ Copy the following files into the new repository's `assets/` folder:
 
 ## 9. README Format
 
-Every `corelib-*` README follows the **same shape** (see `corelib-rs`, `corelib-py`,
-`corelib-go`). Reproduce this structure, swapping in the target language's specifics:
+Every `corelib-*` README follows the **same shape** so the whole family of
+libraries reads consistently — a reader who knows one port's README can navigate
+any other. Reproduce the structure below, swapping in the target language's
+specifics. **Do not change the section ordering and do not invent new top-level
+sections**; that shared shape is the point.
 
-1. **Header block (centered):**
-   * Centered logo: `<p align="center"><img src="assets/sofabuffers_logo.png" alt="SofaBuffers" height="140"></p>`
-   * `# SofaBuffers`
-   * Tagline: `<b>Structured Objects For Anyone</b><br>` + `<i>... so optimized, feels amazing.</i>`
-   * Link back to the GitHub organization.
-2. **`## SofaBuffers <Language> library`** — one-paragraph overview using the
-   language's selling points, the repo link, and **CI + coverage + Docs badges**.
-   The **Docs badge** links to the language's API documentation published as a GitHub
-   Pages site (see item 4). State the **minimum required versions** of the runtime /
-   language toolchain and of every non-optional dependency, and the install command
-   (`cargo add`, `pip install`, `go get`, etc.). Version requirements must be kept
-   up to date as the library evolves.
-3. **`## Why this design`** — a two-column table mapping design goals (streaming
-   output, streaming input, zero unnecessary copies, low/no allocation on the hot path,
-   small footprint, type safety, cross-language compatibility) to how this
-   implementation achieves them.
-4. **API documentation (GitHub Pages)** — A dedicated `docs.yml` workflow (§12.2)
-   generates the language's idiomatic API docs (e.g. rustdoc, Sphinx, TypeDoc,
-   Godoc, Javadoc, DocFX, Doxygen) on every successful push to `main` and publishes
-   them to GitHub Pages via the Actions-based deployment mechanism. The Docs badge in
-   the header links to the published site. There is no separate `## Source
-   documentation` section in the README; the badge is the entry point.
-5. **`## Usage`** — at least two runnable examples:
-   * basic encode + decode (using the language's idiomatic pattern — visitor /
-     pull-parser),
-   * **streaming a message larger than the buffer** via the flush callback / sink.
-6. **`## API summary`** — concise list of the encoder and decoder operations.
-7. **`## Feature flags` / build options** — table of toggles (fixlen, array,
-   sequence, fp64, overflow checks) with defaults, plus a minimal-build example.
-8. **`## Build & test`** — exact commands to build, run unit tests (incl. the shared
-   vectors), and report coverage.
-9. **`## Benchmarks`** — how to run the `perf` and `bench` tools (see §10).
+Before editing a README, **read the corelib's actual source code.** Every fact,
+command, version number, dependency, feature flag, and API name the README states
+must match the code as it stands today — fix anything stale, inaccurate, or
+misleading.
+
+The sections, in order:
+
+### 9.1 Generic header block (centered)
+
+* Centered logo: `<p align="center"><img src="assets/sofabuffers_logo.png" alt="SofaBuffers" height="140"></p>`
+* `# SofaBuffers`
+* Tagline: `<b>Structured Objects For Anyone</b><br>` + `<i>... so optimized, feels amazing.</i>`
+* A link back to the GitHub organization.
+
+### 9.2 `## SofaBuffers <Language> library`
+
+The opening section of every README, containing — in this order:
+
+* **Badges** — CI, coverage, and a **Docs** badge. The Docs badge links to the API
+  reference published on GitHub Pages (§12.2) and is the *only* pointer to API
+  documentation the README carries.
+* **GitHub link** — a link to this port's repository / the GitHub organization.
+* **Short summary** — one paragraph on what makes *this* library special and why a
+  reader should choose it: the language's selling points, the streaming guarantee,
+  the small footprint, cross-language compatibility, etc.
+* **Requirements** — the minimum required version of the runtime / language
+  toolchain, plus the install command (`cargo add`, `pip install`, `go get`, …).
+* **Dependencies** — every non-optional dependency and its minimum version (or an
+  explicit "no runtime dependencies" when that is true). Keep these current as the
+  library evolves.
+
+### 9.3 `## Why this design`
+
+A two-column table mapping design goals (streaming output, streaming input, zero
+unnecessary copies, low/no allocation on the hot path, small footprint, type
+safety, cross-language compatibility) to how *this* implementation achieves them.
+Keep the table format — it must stay parallel across ports.
+
+### 9.4 No API-documentation section
+
+**There is no API-documentation chapter.** The **Docs** badge (§9.2) is the single
+entry point to the generated API reference. Do **not** add a `## Source
+documentation`, `## API reference`, `## API documentation`, or similar section, and
+do not dump generated doc content into the README.
+
+### 9.5 `## Usage`
+
+Concise, runnable examples — in the language's idiomatic pattern — for each of:
+
+* **Simple encode** — build a small message and produce its bytes.
+* **Simple decode** — parse bytes back into values.
+* **Streaming a message larger than the buffer** — drive the flush callback / sink
+  with an output buffer smaller than the whole message.
+* **OStream** — the output-stream / writer-sink wrapper.
+* **IStream** — the input-stream / push-feed wrapper.
+* **Generator** — using generated object code (the one-shot `serialize()` /
+  `deserialize()` helpers *and* the streaming `serialize_to` / decoder path). This
+  is the most common real-world use case, so show it explicitly.
+
+### 9.6 `## API summary`
+
+A high-level overview — **not** an exhaustive function listing. Remove any
+mechanical dump of every method. Explain instead:
+
+* **Encoding** — what methods / patterns the API provides to encode messages.
+* **Decoding** — what methods / patterns the API provides to decode messages.
+* **Memory handling** — ownership and lifetime of the **input buffer**, the
+  **output buffer**, and the **message object**: who allocates each, who owns it,
+  and how long it must stay alive (borrowed vs. copied, caller-owned vs.
+  library-owned).
+* **Feature flags** — a short table of toggles (fixlen, array, sequence, fp64,
+  overflow checks, …) with their defaults, **only** for ports that actually have
+  optional features to disable. Omit this bullet entirely for ports with no
+  feature flags.
+
+### 9.7 `## Build & test`
+
+A short description of how to build the library and how to run the test suite
+(including the shared vectors from `assets/`). Keep it brief — the commands and a
+sentence each, nothing more.
+
+### 9.8 `## Benchmarks`
+
+Describe how to run the `perf` and `bench` tools (§10) and **what each measures**
+(`perf` = CPU-independent per-op cost; `bench` = throughput in MB/s on the current
+machine).
+
+When a single language has **two** corelibs targeting **different use cases**
+(e.g. a general build vs. a `no_std` / embedded build), add a final subsection that:
+
+* explains the intended use case for each implementation, and
+* includes a benchmark comparison table showing why both exist and when to prefer
+  each.
 
 Keep section ordering and wording close to the existing repos so the family of
 libraries reads consistently.
@@ -806,7 +870,7 @@ strategy:
    (`cargo llvm-cov`, `coverage.py`/`pytest-cov`, `gcov`/`gcovr`, `go test -cover`,
    JaCoCo, Coverlet, etc.).
 7. Upload the report to a coverage service (Codecov or equivalent) and wire the
-   resulting badge into the README (see §9, item 2).
+   resulting badge into the README (see §9.2).
 
 ### 12.2 Docs — API Documentation (`docs.yml`)
 
