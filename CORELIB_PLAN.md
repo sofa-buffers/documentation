@@ -76,15 +76,17 @@ When this document and the shared test vectors disagree, the test vectors win.
 
 | Repository | Language | Role | URL |
 |------------|----------|------|-----|
-| `documentation`   | —      | Format spec (this file + README), branding assets | https://github.com/sofa-buffers/documentation |
-| `corelib-c-cpp`   | C99 / C++20 | C/C++ implementation | https://github.com/sofa-buffers/corelib-c-cpp |
-| `corelib-rs`      | Rust   | Rust implementation | https://github.com/sofa-buffers/corelib-rs |
-| `corelib-py`      | Python | Python implementation | https://github.com/sofa-buffers/corelib-py |
-| `corelib-ts`      | TypeScript | TypeScript implementation | https://github.com/sofa-buffers/corelib-ts |
-| `corelib-go`      | Go     | Go implementation | https://github.com/sofa-buffers/corelib-go |
-| `corelib-java`    | Java   | Java implementation | https://github.com/sofa-buffers/corelib-java |
-| `corelib-cs`      | C#     | C# implementation | https://github.com/sofa-buffers/corelib-cs |
-| `generator`       | TypeScript | Schema → code generator | https://github.com/sofa-buffers/generator |
+| `documentation`     | -           | Format spec (this file + README), branding assets | https://github.com/sofa-buffers/documentation |
+| `corelib-c-cpp`     | C99 / C++20 | C/C++ embedded | https://github.com/sofa-buffers/corelib-c-cpp |
+| `corelib-cpp`       | C++20       | C/C++ high speed | https://github.com/sofa-buffers/corelib-cpp |
+| `corelib-rs-no-std` | Rust no_std | Rust embedded | https://github.com/sofa-buffers/corelib-rs-no-std |
+| `corelib-rs`        | Rust        | Rust high speed | https://github.com/sofa-buffers/corelib-rs |
+| `corelib-py`        | Python      | Python high speed | https://github.com/sofa-buffers/corelib-py |
+| `corelib-ts`        | TypeScript  | TypeScript high speed | https://github.com/sofa-buffers/corelib-ts |
+| `corelib-go`        | Go          | Go high speed | https://github.com/sofa-buffers/corelib-go |
+| `corelib-java`      | Java        | Java high speed | https://github.com/sofa-buffers/corelib-java |
+| `corelib-cs`        | C#          | C# high speed | https://github.com/sofa-buffers/corelib-cs |
+| `generator`         | -           | Schema → code generator | https://github.com/sofa-buffers/generator |
 
 Key reference artifacts:
 
