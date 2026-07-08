@@ -773,7 +773,7 @@ libraries reads consistently.
 
 ## 10. Performance Testing
 
-Every `corelib-*` repo ships **two** benchmark tools, in the language's idiomatic
+Every `corelib-*` repo ships **three** benchmark tools, in the language's idiomatic
 benchmark folder (`benches/` in Rust, `cmd/perfbench/` in Go, a benchmark module in
 Python/Java/C#, etc.):
 
@@ -782,11 +782,34 @@ Python/Java/C#, etc.):
   implementation?" — machine-neutral.
 * **`bench`** — practical throughput on the current machine, in MB/s. Answers "how fast
   is it here, right now?".
+* **`run_callgrind.sh`** — instructions-per-op (Callgrind `Ir/op`): the deterministic,
+  machine-independent per-op cost. Unlike `perf`'s cycles/op it is available on *every*
+  target (no "cycle counter unavailable" fallback), which is why the performance gate
+  (§10.1) is built on it.
 
 The **exact workloads, datasets, timing rules, throughput formula, and output grammar
 are specified in [`BENCH_SPEC.md`](BENCH_SPEC.md) — the single source of truth** for the
-cross-language benchmark suite. Both tools must follow it so the numbers are directly
+cross-language benchmark suite. All three tools must follow it so the numbers are directly
 comparable across languages; do not redefine workloads, timing, or output format here.
+
+### 10.1 Performance Gate (CI)
+
+Every repo enforces a **CPU-independent performance gate** on pull requests. A
+`callgrind-gate.yml` workflow (§12.3) measures each workload's `Ir/op` for the PR head
+**and** for the base branch **in the same job** — same toolchain, so the comparison is
+immune to toolchain drift; only a real code change can move the number — and **fails the
+PR if any workload moves more than 2% in either direction**.
+
+The gate uses **only** Callgrind `Ir/op`, never wall-clock or cycle counts (too noisy on
+shared CI runners to gate on). An *increase* > 2% is a performance regression; a *drop*
+> 2% is treated as suspicious and must land with a deliberate acknowledgement (bumping an
+optimization is fine, but it should be intentional). The shared gate helper is
+`bench/callgrind_gate.sh` (`benches/` in the Rust ports).
+
+> **Exception (tracked):** ports whose benchmark runs an interpreter/VM under Valgrind
+> (currently Python, TypeScript, C#) are follow-ups until their `run_callgrind.sh` runs
+> reliably under Valgrind in CI. The gate is required for every port where the tool runs
+> under Valgrind, and the interpreted ports must reach that bar.
 
 ---
 
@@ -829,7 +852,7 @@ ready-to-use, reproducible development environment based on Docker and VS Code D
 
 ## 12. GitHub Workflows
 
-Every `corelib-<lang>` repository ships **two** GitHub Actions workflow files under
+Every `corelib-<lang>` repository ships **three** GitHub Actions workflow files under
 `.github/workflows/`.
 
 ### 12.1 CI — Build & Test (`ci.yml`)
@@ -930,6 +953,23 @@ permissions:
 The site is served at `https://sofa-buffers.github.io/<repo>/`. This URL is the
 target of the **Docs badge** described in §9, item 2.
 
+### 12.3 Performance Gate — Callgrind Ir/op (`callgrind-gate.yml`)
+
+Runs on every pull-request targeting `main`. Measures each workload's `Ir/op` for the PR
+head and for the base branch **in one job** (base checked out via `git worktree`, so both
+sides use the same toolchain) and **fails the PR if any workload's `Ir/op` moved more than
+2% in either direction**. CPU-independent only — never wall-clock or cycle counts. See
+§10.1 and the shared `bench/callgrind_gate.sh` (`benches/` in the Rust ports).
+
+**Required steps**
+
+1. `actions/checkout@v4` with `fetch-depth: 0` (so the base commit is available).
+2. Set up the language toolchain (as in §12.1) and install `valgrind`.
+3. Measure the head: run `run_callgrind.sh` and parse it to `Ir/op` per workload.
+4. Measure the base: `git worktree add` the PR's base SHA, run its `run_callgrind.sh`,
+   parse it (using the head's copy of the gate helper).
+5. Compare head vs base and exit non-zero if any workload moved > 2% (gate closed).
+
 ---
 
 ## 13. Conformance Checklist
@@ -961,7 +1001,12 @@ A new `corelib-<lang>` is conformant when:
 - [ ] `assets/` populated per §8 — branding from `documentation`, `test_vectors.json`
       from `corelib-c-cpp`.
 - [ ] README follows the family format with badges and the required sections (§9).
-- [ ] `perf` (CPU-independent) and `bench` (MB/s) tools present and runnable (§10).
+- [ ] `perf` (CPU-independent), `bench` (MB/s), and `run_callgrind.sh` (Callgrind
+      `Ir/op`) tools present and runnable (§10).
+- [ ] `callgrind-gate.yml` enforces the CPU-independent `Ir/op` ±2% performance gate on
+      PRs, comparing head vs base in one job (§10.1, §12.3). *(Interpreted/VM ports whose
+      tool does not yet run under Valgrind in CI — Python, TypeScript, C# — are tracked
+      exceptions until fixed.)*
 - [ ] `.devcontainer/` folder present with `Dockerfile`, `start.sh`,
       `devcontainer.json`, and `.env.example`; `devcontainer.json` lists language-appropriate
       extensions and `anthropic.claude-code`; `.devcontainer/.env` is gitignored (§11).
