@@ -1,11 +1,18 @@
 # SofaBuffers benchmark specification
 
 This is the single source of truth for the cross-language benchmark suite. Every
-`corelib-*` implementation ships a **throughput** (`bench`) and a **per-op**
-(`perf`) tool that run the *same workloads, on the same data, measured the same
-way, and print the same format*. Numbers are therefore directly comparable across
-languages. A central harness builds each implementation in its own
-`.devcontainer` and parses the output below.
+`corelib-*` implementation ships three tools that run the *same workloads, on the
+same data, measured the same way, and print the same format*:
+
+- **throughput** (`bench`) — MB/s over a CPU-time loop;
+- **per-op** (`perf`) — cycles/op + MB/s;
+- **instruction cost** (Callgrind `Ir/op`) — instructions retired per op,
+  **deterministic and machine-independent** (see "Instruction cost" below).
+
+Numbers are therefore directly comparable across languages. A central harness
+builds each implementation in its own `.devcontainer` and parses the output
+below. All three tools are required: an implementation that ships only two is
+incomplete.
 
 > If you change a benchmark, change it here first. Output that doesn't match this
 > grammar will not be parsed into the comparison tables.
@@ -112,19 +119,60 @@ parenthetical, e.g. `cycles/op     : (cycle counter unavailable on CPython)`.
 Keep the trailing `cycles/op tracks code cost; …` line on every implementation
 for consistency.
 
+### Instruction cost (Callgrind `Ir/op`)
+
+A `run_callgrind.sh` in each repo (`bench/run_callgrind.sh`; `benches/` in the
+Rust ports) reports **instructions retired per op (Ir/op)** under Callgrind.
+Unlike wall-clock or cycle counts, an instruction count is deterministic and
+independent of the host's clock speed and scheduler, so the numbers compare
+across machines — and, unlike `perf`'s cycles/op, they are available on *every*
+target (there is no "counter unavailable" fallback). This is the signal a CI
+performance-regression gate should use.
+
+The tool prints exactly this table (only the numbers differ per language):
+
+```
+===============================================================================
+ SofaBuffers <Lang> instruction cost   (Callgrind, Ir/op)
+ instructions/op: lower is better. Deterministic & machine-independent.
+===============================================================================
+Workload                           instr/op     bytes
+--------                           --------     -----
+encode: u64 array (1000)             <n>         <bytes>
+encode: typical message              <n>         <bytes>
+decode: u64 array (1000)             <n>         <bytes>
+decode: typical message              <n>         <bytes>
+```
+
+The `bytes` column is the encoded message size and must match `perf`'s. Two
+measurement mechanisms are permitted, both yielding one op's Ir:
+
+- **Native symbol toggle** (compiled ports: C/C++, Rust, Zig, Go) — the bench
+  binary exposes each workload as a non-inlined `run_<workload>` symbol doing
+  exactly one op, and the script runs it under
+  `valgrind --tool=callgrind --collect-atstart=no --toggle-collect=run_<workload>`.
+- **Two-rep subtraction** (JIT/interpreted ports: Python, TypeScript, C#, Java)
+  — no stable native symbol exists, so each workload is run at two rep counts
+  `R1`, `R2` and the totals are subtracted: `Ir/op = (Ir(R2) − Ir(R1))/(R2 − R1)`,
+  which cancels startup, JIT/compile and setup cost. The two runs must differ
+  *only* in the measured rep count; managed runtimes should pin the JIT tier and
+  disable GC so the fixed cost is stable enough that the residual jitter is a
+  negligible fraction of the reported per-op number.
+
 ## Reference implementation
 
 `corelib-rs/benches/bench.rs` and `corelib-rs/benches/perf.rs` are the textual
-golden reference for the format above; the C/C++ tools under
-`corelib-c-cpp/bench/` mirror them. New or changed implementations should produce
-byte-identical structure (only the `<Label>` and the numbers differ).
+golden reference for the `bench`/`perf` format above; the C/C++ tools under
+`corelib-c-cpp/bench/` mirror them, and `corelib-c-cpp/bench/run_callgrind.sh`
+(native toggle) plus `corelib-ts/bench/run_callgrind.sh` (two-rep subtraction)
+are the golden references for the instruction-cost tool. New or changed
+implementations should produce byte-identical structure (only the `<Label>`/
+`<Lang>` and the numbers differ).
 
 ## Supplementary, language-native views (not part of the comparison tables)
 
 These are allowed *in addition to* the standard tools, but are not parsed into the
 cross-language tables:
 
-- **Callgrind `Ir/op`** (instructions per op) — deterministic, machine-independent
-  cost, via each repo's `bench/run_callgrind.sh`.
 - **Go `go test -bench`** — native `ns/op` + `allocs/op` (incl. zero-copy
   variants), reported separately.
