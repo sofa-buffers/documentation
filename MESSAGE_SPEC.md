@@ -393,3 +393,54 @@ Relaxations carried by the zero-length-array change:
 
 Deliberately left for later (cheap to add): deep `default`-value validation for
 composite-element arrays (currently a generic array bounded by `count`).
+
+---
+
+## 7. Decode outcomes & message completeness (normative)
+
+Decoding is **incremental**: a decoder is fed the wire byte stream in one or more
+chunks (the corelib `feed` operation, CORELIB_PLAN §4) and dispatches each
+complete top-level field the instant its header and payload have arrived. A chunk
+boundary may fall **anywhere**, including mid-field, so a decoder cannot tell
+"this message is malformed" from "more bytes are still coming" by looking at a
+chunk in isolation. Every `feed` therefore reports one of **three** outcomes:
+
+| outcome | meaning | can more bytes complete it? |
+|---|---|---|
+| **`COMPLETE`** | the consumed bytes end exactly at a field boundary; a valid message *may* end here (more fields may also still follow) | — |
+| **`INCOMPLETE`** | the bytes end **inside** a field — an unterminated varint (§4.1: the `0x80` continuation flag was set but the stream stopped), or a fixlen payload (§4.6) shorter than its declared length — or inside a sequence that has not been closed; the partial tail is retained for the next `feed` | **yes** — the caller must feed more |
+| **`INVALID`** | the bytes are malformed **regardless of what follows**: an unknown wire-type tag (§1, CORELIB_PLAN §4.3), a varint exceeding 64 bits (§4.1), a length or count above its maximum, nesting past `MAX_DEPTH` (§5.4), or a sequence-end marker with no open sequence | no |
+
+`INCOMPLETE` is **not** an error. A conformant decoder **MUST** distinguish it
+from both neighbours: collapsing `INCOMPLETE` into `COMPLETE` (silently accepting
+a truncated message) **or** into `INVALID` (rejecting a stream that was merely
+split across chunks) is non-conformant.
+
+### 7.1 Completeness at finalization
+
+A message is judged **complete** only when the caller signals end-of-input — a
+`finish` (finalize) step. A one-shot `decode(bytes)` is exactly `feed(bytes)`
+followed by `finish`. At finalization the decoder **MUST** verify it is in the
+`COMPLETE` state:
+
+- if a partial trailing field is still buffered (the decoder is `INCOMPLETE`), or
+  any sequence opened during the message was never closed, the message is
+  **truncated** and **MUST** be reported as `INVALID`;
+- otherwise the message is valid.
+
+Equivalently — the **framing invariant**: a valid message is consumed **exactly**,
+no byte short and no byte over. Truncation (bytes short of a complete field) and
+trailing garbage (bytes after the last complete field that do not themselves form
+one) are both `INVALID` at `finish`. A lone dangling `0x80` is `INCOMPLETE` after
+`feed` and `INVALID` after `finish`, so a one-shot decode of it **MUST** fail.
+
+### 7.2 API implication
+
+`feed` therefore carries a **three-valued** status
+(`COMPLETE` / `INCOMPLETE` / `INVALID`), and every corelib **MUST** expose a
+`finish`/finalize that turns a still-`INCOMPLETE` decoder into `INVALID`. The
+concrete status names, the `feed`/`finish` signatures, and the streaming buffer
+mechanics are the corelib's contract ([`CORELIB_PLAN.md`](./CORELIB_PLAN.md) §4);
+this document fixes only the **semantics** above — the three outcomes and the
+finalization completeness rule — which every conforming implementation and its
+generated code must honour identically.
