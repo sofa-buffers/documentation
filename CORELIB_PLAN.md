@@ -728,21 +728,24 @@ Concise, runnable examples — in the language's idiomatic pattern — for each 
   `deserialize()` helpers *and* the streaming `serialize_to` / decoder path). This
   is the most common real-world use case, so show it explicitly.
 
-### 9.6 `## API summary`
+### 9.6 `## Memory handling`
 
-A high-level overview — **not** an exhaustive function listing. Remove any
-mechanical dump of every method. Explain instead:
+Describe **only** the ownership and lifetime of the message buffers used for
+encoding and decoding — who allocates each, who owns it, and how long it must
+stay alive (borrowed vs. copied, caller-owned vs. library-owned). Do **not** turn
+this into an API listing.
 
-* **Encoding** — what methods / patterns the API provides to encode messages.
-* **Decoding** — what methods / patterns the API provides to decode messages.
-* **Memory handling** — ownership and lifetime of the **input buffer**, the
-  **output buffer**, and the **message object**: who allocates each, who owns it,
-  and how long it must stay alive (borrowed vs. copied, caller-owned vs.
-  library-owned).
-* **Feature flags** — a short table of toggles (fixlen, array, sequence, fp64,
-  overflow checks, …) with their defaults, **only** for ports that actually have
-  optional features to disable. Omit this bullet entirely for ports with no
-  feature flags.
+* **Output buffer (encoding)** — who owns the buffer written into, whether the
+  library allocates or grows it, and what happens when it fills (flush sink /
+  reuse vs. a buffer-full error).
+* **Input buffer (decoding)** — who owns the bytes being parsed, how long they
+  must outlive the call, and whether decoded `string`/`blob` values borrow into
+  that buffer (valid only during the callback, copy out to keep) or are copied.
+
+State plainly whether the hot path allocates and whether any library-owned heap
+memory exists (e.g. a small internal carry/accumulator for chunk-straddling
+fields). Where it helps, add a short owner/lifetime table for the two buffers.
+Keep the wording parallel across ports.
 
 ### 9.7 `## Build & test`
 
