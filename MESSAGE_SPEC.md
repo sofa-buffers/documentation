@@ -444,3 +444,40 @@ mechanics are the corelib's contract ([`CORELIB_PLAN.md`](./CORELIB_PLAN.md) §4
 this document fixes only the **semantics** above — the three outcomes and the
 finalization completeness rule — which every conforming implementation and its
 generated code must honour identically.
+
+---
+
+## 8. String validity: UTF-8 (normative, opt-in check)
+
+A `string` value is **UTF-8** (§1); `blob` (§1) is the type for opaque byte
+sequences. A `string` payload whose bytes are **not valid UTF-8** is a malformed
+string, and the **strict, conformant** decode behavior is to reject it — an
+invalid-UTF-8 `string` is `INVALID` (§7). Producers **MUST NOT** emit non-UTF-8
+bytes in a `string`; put arbitrary bytes in a `blob`.
+
+This document deliberately does **not** require the check to be always-on. Its
+cost falls on the hot decode path, and the family's native string types differ:
+
+- **Unicode string types** — Rust `String`, Java/C# `string`, JavaScript strings,
+  Python `str` — cannot even hold non-UTF-8 bytes; their constructors already
+  either reject or lossily replace (U+FFFD).
+- **Byte-container types** — C `char[]`, C++ `std::string`, Go `string`, Zig
+  `[]const u8` — carry arbitrary bytes unchecked.
+
+So a corelib **MAY** gate UTF-8 validation behind a **configuration option** (a
+build or runtime flag), and that option **MAY default to OFF**:
+
+- **check ON** — the decoder **MUST** reject an invalid-UTF-8 `string` as
+  `INVALID` (§7). Unicode string types use their **strict / fatal** constructor
+  (not the lossy one); byte-container types add an explicit UTF-8 validation.
+  This is the strict, family-uniform behavior.
+- **check OFF** (permitted default) — invalid-UTF-8 handling is
+  **implementation-defined**: a byte-container type typically preserves the raw
+  bytes; a Unicode string type applies its own constructor policy (e.g. U+FFFD
+  replacement). This trades conformance for zero-cost decoding and is **outside**
+  the strict contract.
+
+**Conformance testing and the SofaBuffers differential fuzzer run with the check
+ON**, so every implementation agrees that an invalid-UTF-8 `string` is rejected.
+A deployment that needs maximum decode throughput and controls both ends may run
+with it off; cross-implementation interop requires it on.
