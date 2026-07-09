@@ -402,6 +402,24 @@ The decoder uses a **push-feed / pull-read** model:
 This push/pull split is what makes true input-side streaming possible: the consumer
 never has to hold the whole message, and it binds output storage lazily, per field.
 
+**Decode outcome — a three-valued status, no finalize step.** Every `feed` (and the
+one-shot `decode`, which is a single `feed` of the whole input) returns one of three
+outcomes for the bytes consumed *so far* — `COMPLETE`, `INCOMPLETE`, or `INVALID`
+(MESSAGE_SPEC §7 fixes the semantics):
+
+* **`COMPLETE`** — consumed exactly to a field boundary; a valid message may end here.
+* **`INCOMPLETE`** — ended inside a field (an unterminated varint, a short fixlen
+  payload, or an unclosed sequence); the partial tail is retained for the next `feed`.
+  **`INCOMPLETE` is _not_ an error** — more bytes may complete it.
+* **`INVALID`** — malformed regardless of what follows (unknown tag, an overlong
+  `>64`-bit varint, a length/count over its maximum, nesting past `MAX_DEPTH`, a stray
+  sequence-end).
+
+There is **no** `finish`/`finalize`/`end` step, and a decoder **must not** provide one
+that reclassifies `INCOMPLETE` as `INVALID`. The status a `feed`/`decode` returns *is*
+the outcome; whether a trailing `INCOMPLETE` is a truncation error is the **caller's**
+decision, judged from its own framing (a length prefix, a datagram boundary, EOF).
+
 ### 5.3 Language-Idiomatic Patterns (encouraged)
 
 A new implementation **should use the best idiomatic pattern for its language** as long
@@ -474,7 +492,10 @@ should be adapted to the language's conventions; semantics are fixed.
 
 **Decoder**
 * Initialize with a field handler (callback / visitor / pull-iterator).
-* `feed(bytes)` accepting arbitrarily small chunks.
+* `feed(bytes)` accepting arbitrarily small chunks, returning the three-valued decode
+  outcome `COMPLETE` / `INCOMPLETE` / `INVALID` (§5.2, MESSAGE_SPEC §7). **No** separate
+  `finish`/`finalize`/`end` step — `INCOMPLETE` is surfaced to the caller, never
+  auto-promoted to an error.
 * Per-field: **read** the value into a typed destination, or **skip**. If the language
   supports overloading a single `read(destination)` suffices; otherwise use
   `read_<type>(destination)` variants.
@@ -532,8 +553,11 @@ person.serialize_to(ostream)            # writes via the corelib flush callback 
 
 # streaming IN: drive a decoder fed with arbitrarily small chunks
 dec = Person.decoder()                  # a generated reader bound to the corelib istream
-dec.feed(chunk1); dec.feed(chunk2); ... # push small chunks
-person = dec.finish()                   # object assembled incrementally, never fully buffered
+st = dec.feed(chunk1); st = dec.feed(chunk2); ...  # each feed returns COMPLETE / INCOMPLETE / INVALID
+person = dec.value                      # object assembled incrementally, never fully buffered
+# No finish()/end(): `st` is the outcome so far. The caller accepts `person` once
+# st == COMPLETE and its framing says the input is done; a still-INCOMPLETE status at
+# end-of-input is truncation, judged by the caller (MESSAGE_SPEC §7).
 ```
 
 **This forces a requirement back onto the corelib API:** the generated layer must be
@@ -574,7 +598,16 @@ C/C++ reference exposes these as the `sofab_ret_t` codes / the `Error` enum.)
 | `UsageError` | Invalid usage, e.g. a type mismatch on read. |
 | `BufferFull` | Output buffer overflowed during encoding. |
 | `InvalidArgument` | Invalid argument, e.g. a field ID out of range. |
-| `InvalidMessage` | Malformed message while decoding: truncated/overlong varint, unbalanced sequence end, oversized length/count, nesting past `MAX_DEPTH`, invalid UTF-8, etc. |
+| `InvalidMessage` | Malformed message while decoding — malformed **regardless of what follows**: an **overlong (`>64`-bit) varint**, an unbalanced sequence end, an oversized length/count, nesting past `MAX_DEPTH`, invalid UTF-8, etc. Corresponds to the `INVALID` decode outcome (§5.2). **Truncation is _not_ `InvalidMessage`** — see the note below. |
+
+**Decode outcome vs. error code.** A decoder's per-`feed`/`decode` result is the
+three-valued **decode outcome** `COMPLETE` / `INCOMPLETE` / `INVALID` (§5.2,
+MESSAGE_SPEC §7), *not* one of the codes in this table. `INVALID` corresponds to
+`InvalidMessage`; **`INCOMPLETE`** — bytes short of a complete field, i.e. truncation —
+is **not** an error and **must not** be reported as `InvalidMessage`: it is surfaced to
+the caller, who judges it per its own framing. There is **no** `finish`/`finalize` step
+that turns an `INCOMPLETE` into `InvalidMessage`. The codes in this table cover the
+*other* fallible operations (encoding, type-mismatched reads, argument checks).
 
 This set is the common baseline. **Language- or platform-specific conditions may extend
 or refine it** — e.g. an I/O error from a stream sink, an allocation failure in a managed
@@ -634,9 +667,15 @@ the language's idiomatic convention — `tests/` in Rust and Python,
    * **Decode** by feeding the input **one byte at a time** (and in odd-sized chunks);
      assert the result is identical to feeding it all at once. This proves the state
      machine suspends/resumes at any byte boundary.
-5. **Malformed-input tests** — truncated varints, overlong varints, unbalanced
-   sequence end, oversized lengths → must return a well-defined error, never crash.
-6. **Skip tests** — decode while ignoring some fields and whole sub-sequences; assert
+5. **Malformed-input tests** — an overlong (`>64`-bit) varint, an unbalanced sequence
+   end, an oversized length/count, nesting past `MAX_DEPTH` → must return the `INVALID`
+   decode outcome (a well-defined error), never crash.
+6. **Truncation tests** — a message cut short mid-field (a lone dangling varint such as
+   `0x80`, a fixlen payload shorter than its declared length, an unclosed sequence) →
+   must return **`INCOMPLETE`**, *not* `INVALID` and *not* `COMPLETE`. It is a
+   well-defined non-error outcome; feeding the missing bytes then completes it, and there
+   is no `finish` step that promotes it to an error (§5.2, MESSAGE_SPEC §7).
+7. **Skip tests** — decode while ignoring some fields and whole sub-sequences; assert
    correct resync on the following field.
 
 ### 7.3 Coverage
@@ -989,7 +1028,9 @@ A new `corelib-<lang>` is conformant when:
 - [ ] **Streaming encode** into a smaller-than-message buffer via flush callback /
       sink, with mid-stream buffer swap (§5.1).
 - [ ] **Streaming decode** via `feed` of arbitrarily small chunks, push-callback /
-      pull-read, lazy field binding, and auto-skip (§5.2).
+      pull-read, lazy field binding, and auto-skip (§5.2), returning the three-valued
+      `COMPLETE` / `INCOMPLETE` / `INVALID` outcome with **no** `finish`/`finalize` step —
+      `INCOMPLETE` surfaced, never auto-promoted to an error (§5.2, MESSAGE_SPEC §7).
 - [ ] Result/error reporting follows the §6.3 baseline codes (or idiomatic exceptions
       where the language uses them by default; return codes / result objects otherwise).
 - [ ] The streaming primitives are sufficient to build a thin **generated-object**
