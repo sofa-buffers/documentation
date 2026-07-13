@@ -144,14 +144,10 @@ wire form** for them; only the schema must permit them as element types.
   (CORELIB_PLAN §4.7); the decoder validates `≤ N`. `count` is **optional**, exactly
   like `maxlen`: omit it for a dynamic/unbounded collection (heap targets); provide
   it so heap-less targets can pre-size the buffer.
-- A zero-length array is valid — an **explicit empty array** (CORELIB_PLAN §4.7–4.8).
-  A **fixlen** array (`fp32`/`fp64`) **still carries its `fixlen_word`** (the element
-  subtype/width) even when empty: `[ header ][ count = 0 ][ fixlen_word ]`, with no
-  payload. This is required so an empty `fp32` array and an empty `fp64` array stay
-  **distinguishable on the wire** — without it both would be `[ header ][ count = 0 ]`
-  and a decoder that infers the element type from the wire could not tell them apart.
-  Integer arrays carry **no** `fixlen_word` (their element width is an API concern,
-  never on the wire), so an empty integer array is simply `[ header ][ count = 0 ]`.
+- A zero-length array is valid — an **explicit empty array**. Its exact wire form
+  (including why an empty fixlen array still carries its `fixlen_word`) is
+  byte-level encoding and lives in CORELIB_PLAN §4.7–4.8; all that matters at this
+  layer is that an explicitly empty array **is representable** (§2).
 - **No sparse elements here.** A compact scalar array is serialized **linearly and
   in full**: the count prefix is the actual element number, and each of those
   elements is present in order with no per-element header — there is nothing to
@@ -220,13 +216,11 @@ sequence), staying consistent with the empty-array form (§2, §3).
 
 ### 5.1 Element identity inside an array wrapper (normative)
 
-A wrapper sequence is an **ordinary sequence**, so — exactly like the C decoder's
-state machine — **every element is a normal field with its own `(id, type)`
-header**. After the wrapper's `sequence start` the decoder is back in its idle
-state and reads one field header per element until the sequence end. There is **no
-header-less element form here**; the only header-less elements are the compact
-scalar arrays of §3, which are a different wire type with their own count-driven
-decode states.
+A wrapper sequence is an **ordinary sequence**, so **every element is a normal
+field with its own `(id, type)` header** — one field header per element, from the
+wrapper's `sequence start` to its sequence end. There is **no header-less element
+form here**; the only header-less elements are the compact scalar arrays of §3,
+which are a different wire type.
 
 **Element id = the 0-based array index.** The first element has id `0`, the second
 id `1`, and so on, so on the wire **id ≡ array index**. This keeps the ids unique
@@ -248,12 +242,9 @@ Consequences:
 The wrapper sequence carries the array field's own `id` in its parent scope; an
 empty wrapper (a sequence with no children) is the explicit empty array.
 
-**Decoder cost (minimal-footprint targets).** Array-of-composite needs **no new
-decoder state**: it reuses the existing idle + sequence-push/pop + leaf states, so
-a deeper element type (struct/union/array/string/blob) adds **zero `.text`** to
-the decoder. Only the compact scalar arrays of §3 use the dedicated array-count
-states. Skipping an unwanted array-of-composite nests through the same
-`skip_depth` mechanism, bounded by `MAX_DEPTH = 255`.
+(Array-of-composite also requires no new decoder machinery in a corelib — an
+implementation note in CORELIB_PLAN §4.9. The only bound relevant at this layer is
+that skipping/nesting stays within `MAX_DEPTH = 255`.)
 
 **Sparse elements & default reconstruction (normative).** A `string`/`blob`
 element equal to its element default is **not** written (§2); its id is simply
@@ -294,7 +285,9 @@ points = seq[5](                     # the array field, at its own id 5
 # outer ids 0/1/2 = the array indices; inner ids 0/1 = the struct's own fields x/y
 ```
 
-Worked byte example — a **sparse `string` element** (the issue-#6 case). Array
+Worked byte example — a **sparse `string` element** (the issue-#6 case); byte
+values are shown for illustration only (the encoding itself is CORELIB_PLAN §4's
+job — normative *here* is only which elements are present vs. omitted). Array
 `tags: array of string` at id `5`, element default `""`, value `["A", "", "C"]`;
 element 1 equals the default and is therefore omitted:
 
@@ -396,108 +389,34 @@ composite-element arrays (currently a generic array bounded by `count`).
 
 ---
 
-## 7. Decode outcomes (normative)
+## 7. Decode outcomes — what generated code must do
 
-Decoding is **incremental**: a decoder is fed the wire byte stream in one or more
-chunks (the corelib `feed` operation, CORELIB_PLAN §5.2) and dispatches each
-complete top-level field the instant its header and payload have arrived. A chunk
-boundary may fall **anywhere**, including mid-field.
+The three-valued decode outcome — `COMPLETE` / `INCOMPLETE` / `INVALID`, the rule
+that `INCOMPLETE` is a first-class non-error, and the no-finalize /
+caller-owns-end-of-input contract — is the **corelib's API contract**, defined
+normatively in [`CORELIB_PLAN.md`](./CORELIB_PLAN.md) §5.2 (error codes: §6.3).
+This document adds only the obligations on **generated code**:
 
-**Every decode call returns one of exactly three outcomes**, describing the bytes
-consumed *so far*. This holds identically for a single one-shot `decode(bytes)`
-and for every streaming `feed(chunk)` — a one-shot decode is just a single `feed`
-of the whole input, and it returns the very same three-valued status:
-
-| outcome | one-shot alias | meaning | can more bytes change it? |
-|---|---|---|---|
-| **`COMPLETE`** | `OK` | the consumed bytes end **exactly** at a field boundary; a valid message *may* end here (more fields may also still follow) | more valid fields may extend it |
-| **`INCOMPLETE`** | `OK_BUT_INCOMPLETE` | the bytes end **inside** a field — an unterminated varint (§4.1: the `0x80` continuation flag was set but the stream stopped), a fixlen payload (§4.6) shorter than its declared length, or inside a sequence not yet closed; the partial tail is retained for the next `feed` | **yes** — feeding more bytes may complete it |
-| **`INVALID`** | `ERROR` | the bytes are malformed **regardless of what follows**: an unknown wire-type tag (§1, CORELIB_PLAN §4.3), a varint exceeding 64 bits (§4.1), a length or count above its maximum (§3), nesting past `MAX_DEPTH` (§5.4), or a sequence-end marker with no open sequence | no — terminal |
-
-**`INCOMPLETE` is explicitly NOT an error — it is a valid, first-class outcome**,
-returned the same way from a one-shot `decode` and a streaming `feed`. A conformant
-decoder **MUST** report it distinctly and **MUST NOT** fold it into either
-neighbour:
-
-- folding `INCOMPLETE` into `COMPLETE` (silently treating a truncated tail as a
-  finished message) is non-conformant;
-- folding `INCOMPLETE` into `INVALID` (rejecting a stream that was merely split
-  across chunks, or a prefix the caller may still extend) is non-conformant.
-
-### 7.1 No finalization step — the caller owns end-of-input
-
-The three outcomes are a property of **the bytes consumed so far** and are
-computable at **any** byte boundary from the decoder's own state. A decoder
-therefore needs **no** separate `finish`/`finalize`/`end` step, and **MUST NOT**
-provide one that reclassifies `INCOMPLETE` as `INVALID`. There is no hidden
-finalization: the status `feed`/`decode` returns *is* the answer.
-
-**Whether an `INCOMPLETE` result is acceptable is the caller's decision, not the
-decoder's** — only the caller knows its framing:
-
-- a **streaming** caller reads `INCOMPLETE` as "feed me the next chunk";
-- a caller with an **outer frame** (a length prefix, a datagram boundary, EOF)
-  that has delivered all its bytes and still sees `INCOMPLETE` knows the message
-  was **truncated** and treats that as an error **at its own layer**;
-- a **one-shot** caller that requires a whole message inspects the status and
-  accepts only `COMPLETE`, treating `INCOMPLETE` (and `INVALID`) as failure.
-
-The **framing invariant** still holds, now expressed purely through the returned
-status: a valid, whole message is consumed **exactly** — it returns `COMPLETE`
-with nothing left pending. Truncation (bytes short of a complete field) returns
-`INCOMPLETE`; trailing bytes that *begin* but do not finish another field also
-return `INCOMPLETE`; trailing bytes that cannot begin any valid field return
-`INVALID`. A lone dangling `0x80` fed on its own returns **`INCOMPLETE`** (not
-`INVALID`): it is a well-formed *prefix* of a varint, and more bytes could
-complete it. The decoder never decides on the caller's behalf that this prefix is
-"truncated" — it reports `INCOMPLETE` and lets the caller's framing rule.
-
-### 7.2 API implication
-
-`feed` and one-shot `decode` both carry the same **three-valued** status; the
-canonical semantics are `COMPLETE` / `INCOMPLETE` / `INVALID` (concrete status
-names are the corelib's contract — [`CORELIB_PLAN.md`](./CORELIB_PLAN.md) §5.2).
-Corelibs **MUST NOT** require a separate finalize/`finish`/`end` call to surface
-the decode result, and **MUST** expose `INCOMPLETE` to the caller rather than
-collapsing it into success or failure. Generated code returns that status
-verbatim — it neither invents a finalization gate nor downgrades `INCOMPLETE` to a
-`COMPLETE` or an `INVALID` on the caller's behalf. This document fixes only the
-**semantics** — the three outcomes and the caller-owns-end-of-input rule — which
-every conforming implementation and its generated code must honour identically.
+- **Return the corelib's status verbatim.** A generated `deserialize` / decoder
+  `feed` neither invents a finalization gate nor downgrades `INCOMPLETE` into a
+  `COMPLETE` or an `INVALID` on the caller's behalf. Whether a trailing
+  `INCOMPLETE` is a truncation error is the *application's* framing decision,
+  exactly as it is for direct corelib use.
+- **Bind incrementally.** A generated decoder is driven by the corelib `feed` and
+  binds each field the moment it completes, so an object larger than any buffer
+  still assembles across chunk boundaries (CORELIB_PLAN §6.1).
 
 ---
 
-## 8. String validity: UTF-8 (normative, opt-in check)
+## 8. String validity: UTF-8
 
 A `string` value is **UTF-8** (§1); `blob` (§1) is the type for opaque byte
-sequences. A `string` payload whose bytes are **not valid UTF-8** is a malformed
-string, and the **strict, conformant** decode behavior is to reject it — an
-invalid-UTF-8 `string` is `INVALID` (§7). Producers **MUST NOT** emit non-UTF-8
+sequences. Producers — hand-written or generated — **MUST NOT** emit non-UTF-8
 bytes in a `string`; put arbitrary bytes in a `blob`.
 
-This document deliberately does **not** require the check to be always-on. Its
-cost falls on the hot decode path, and the family's native string types differ:
-
-- **Unicode string types** — Rust `String`, Java/C# `string`, JavaScript strings,
-  Python `str` — cannot even hold non-UTF-8 bytes; their constructors already
-  either reject or lossily replace (U+FFFD).
-- **Byte-container types** — C `char[]`, C++ `std::string`, Go `string`, Zig
-  `[]const u8` — carry arbitrary bytes unchecked.
-
-So a corelib **MAY** gate UTF-8 validation behind a **configuration option** (a
-build or runtime flag), and that option **MAY default to OFF**:
-
-- **check ON** — the decoder **MUST** reject an invalid-UTF-8 `string` as
-  `INVALID` (§7). Unicode string types use their **strict / fatal** constructor
-  (not the lossy one); byte-container types add an explicit UTF-8 validation.
-  This is the strict, family-uniform behavior.
-- **check OFF** (permitted default) — invalid-UTF-8 handling is
-  **implementation-defined**: a byte-container type typically preserves the raw
-  bytes; a Unicode string type applies its own constructor policy (e.g. U+FFFD
-  replacement). This trades conformance for zero-cost decoding and is **outside**
-  the strict contract.
-
-**Conformance testing and the SofaBuffers differential fuzzer run with the check
-ON**, so every implementation agrees that an invalid-UTF-8 `string` is rejected.
-A deployment that needs maximum decode throughput and controls both ends may run
-with it off; cross-implementation interop requires it on.
+Whether and when a *decoder* validates UTF-8 — the strict check that rejects an
+invalid-UTF-8 `string` as `INVALID`, the opt-in configuration around it, and its
+permitted OFF default — is corelib behavior, defined in
+[`CORELIB_PLAN.md`](./CORELIB_PLAN.md) §6.4. Conformance testing and the
+SofaBuffers differential fuzzer run with the check **ON**, so
+cross-implementation interop requires it on.

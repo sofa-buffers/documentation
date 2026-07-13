@@ -115,14 +115,10 @@ overall length header.
 * **Sequence** — purely a wire construct: it opens a fresh ID scope and nothing
   more. Opened by a *sequence start* field and closed by a *sequence end* marker.
   It carries no type semantics of its own — that fresh scope is the only thing a
-  sequence does. On top of this single primitive you can model:
-  * nested structures,
-  * dynamically sized arrays (unknown count up front),
-  * arrays of variable-length elements, e.g. strings or blobs (each element may
-    have a different length). Blobs behave just like strings here — both are
-    dynamic byte payloads.
-  * tagged unions ("exactly one of") — the single field present identifies the
-    active option.
+  sequence does. The message layer builds nested structures, dynamically sized
+  arrays, arrays of variable-length elements (strings/blobs), and tagged unions
+  on top of this single primitive; how each schema type lowers onto sequences is
+  defined in [`MESSAGE_SPEC.md`](./MESSAGE_SPEC.md) §4–§5, not here.
 * **Scope** — each sequence opens a fresh ID namespace; child IDs never collide with
   parent IDs.
 
@@ -216,9 +212,9 @@ result is indistinguishable from an unsigned integer. (The shared test vectors c
 `boolean` op accordingly; it encodes exactly as an unsigned `0`/`1`, e.g. `boolean true`
 at id `0` → `00 01`.)
 
-**Bitfields / flag sets** likewise have no wire type — they are mapped to an unsigned
-integer on the wire, and the bit layout is handled entirely by the **generated message
-code** (and the schema). The corelib only ever sees a plain unsigned integer.
+Other schema-level types that lower to an unsigned integer (e.g. bitfields / flag
+sets) are a message-layer concern — see [`MESSAGE_SPEC.md`](./MESSAGE_SPEC.md) §1.
+The corelib only ever sees a plain unsigned integer.
 
 ### 4.5 Signed Integer (type `0b001`)
 
@@ -228,11 +224,10 @@ code** (and the schema). The corelib only ever sees a plain unsigned integer.
 
 Decode the varint, then zig-zag-decode into a signed value.
 
-**Enums** have no dedicated wire type: they are encoded exactly as signed integers
-(type `0b001`, zig-zag varint). The enum semantics live only in the schema /
-generated code; on the wire an enum is indistinguishable from a signed integer.
-Enum values are limited to the **signed 32-bit range** (−2,147,483,648 ..
-2,147,483,647).
+Schema-level types that lower to a signed integer (e.g. enums, including their
+32-bit value range) are a message-layer concern — see
+[`MESSAGE_SPEC.md`](./MESSAGE_SPEC.md) §1. The corelib only ever sees a plain
+signed integer.
 
 ### 4.6 Fixlen Value (type `0b010`)
 
@@ -270,6 +265,8 @@ Length range `0 .. 2,147,483,647`. Fixlen subtypes:
   Callers that need a null-terminated string must append it themselves.
 * For `blob`, the payload is opaque.
 * A decoder uninterested in the field skips exactly `length` payload bytes.
+* Subtypes `0x4`–`0x7` are **reserved**: a decoder **must** reject a fixlen field
+  carrying a reserved subtype as malformed (the `INVALID` decode outcome, §5.2).
 
 ### 4.7 Array of Unsigned / Signed Integers (types `0b011` / `0b100`)
 
@@ -283,7 +280,7 @@ Length range `0 .. 2,147,483,647`. Fixlen subtypes:
   array on the wire — exactly `[ header_varint ] [ element_count_varint = 0 ]`, with no
   elements following. The wire format makes no claim about how an explicit empty array
   relates to an absent field; whether the two are distinguished, and what each means, is
-  a code-generator concern, not a wire-level one.
+  a code-generator concern, not a wire-level one (MESSAGE_SPEC §2).
 * Each element is an independent varint (unsigned) or zig-zag varint (signed); the
   byte length per element varies.
 * The declared element width on the API (8/16/32/64-bit) affects only how the
@@ -329,16 +326,20 @@ sequence end:    [ 0x07 ]      // (id = 0) << 3 | 0b111  ==  0x07, a single byte
   end, descending into nested sequences and tracking depth.
 * An **empty sequence** — a `sequence start` immediately followed by its `0x07` end —
   is legal and well-formed; a decoder must accept it. It is the composite-type
-  counterpart of a zero-count array (§4.7): the encoding by which an explicitly empty
-  dynamic array, string/blob array, or other sequence-modeled collection is represented.
+  counterpart of a zero-count array (§4.7); what an empty sequence *means*
+  (explicit empty collection, all-default struct, …) is a message-layer concern
+  (MESSAGE_SPEC §2, §4).
 * That single primitive (a fresh scope) is enough to model nested structures,
-  dynamically sized arrays, arrays of variable-length elements such as strings
-  or blobs (anything where each element may have a different length; blobs are
-  treated just like strings), and tagged unions. These are all schema-level uses
-  the corelib needn't distinguish — each is just a sequence on the wire. (For
-  context only: a struct's children fill its scope; a tagged union puts its one
-  active option in the scope as the single child, so that child's id selects the
-  option.)
+  dynamically sized arrays, arrays of variable-length elements (strings/blobs),
+  and tagged unions. These are all schema-level uses the corelib needn't
+  distinguish — each is just a sequence on the wire; the lowering of each schema
+  type onto sequences is defined in [`MESSAGE_SPEC.md`](./MESSAGE_SPEC.md) §4–§5.
+* **Implementation note:** decoding a sequence-wrapped (composite) array needs no
+  dedicated decoder states — after a `sequence start` the decoder is back in its
+  idle state and reads ordinary field headers, so array-of-composite reuses the
+  existing idle + sequence-push/pop + leaf states, and skipping one nests through
+  the same depth-tracking mechanism. Only the count-prefixed array wire types
+  (§4.7–4.8) need their own count-driven states.
 * **Maximum nesting depth is 255** (`MAX_DEPTH`, §6.2). An encoder must not open more
   than 255 nested sequences; a decoder must reject a message that nests deeper with an
   `InvalidMessage` error rather than risk unbounded recursion / stack growth.
@@ -402,23 +403,54 @@ The decoder uses a **push-feed / pull-read** model:
 This push/pull split is what makes true input-side streaming possible: the consumer
 never has to hold the whole message, and it binds output storage lazily, per field.
 
-**Decode outcome — a three-valued status, no finalize step.** Every `feed` (and the
-one-shot `decode`, which is a single `feed` of the whole input) returns one of three
-outcomes for the bytes consumed *so far* — `COMPLETE`, `INCOMPLETE`, or `INVALID`
-(MESSAGE_SPEC §7 fixes the semantics):
+**Decode outcome — a three-valued status, no finalize step (normative).** Decoding
+is incremental: a chunk boundary may fall **anywhere**, including mid-field. Every
+`feed` — and the one-shot `decode`, which is just a single `feed` of the whole
+input — returns one of exactly three outcomes describing the bytes consumed *so
+far*:
 
-* **`COMPLETE`** — consumed exactly to a field boundary; a valid message may end here.
-* **`INCOMPLETE`** — ended inside a field (an unterminated varint, a short fixlen
-  payload, or an unclosed sequence); the partial tail is retained for the next `feed`.
-  **`INCOMPLETE` is _not_ an error** — more bytes may complete it.
-* **`INVALID`** — malformed regardless of what follows (unknown tag, an overlong
-  `>64`-bit varint, a length/count over its maximum, nesting past `MAX_DEPTH`, a stray
-  sequence-end).
+| outcome | one-shot alias | meaning | can more bytes change it? |
+|---|---|---|---|
+| **`COMPLETE`** | `OK` | the consumed bytes end **exactly** at a field boundary; a valid message *may* end here (more fields may also still follow) | more valid fields may extend it |
+| **`INCOMPLETE`** | `OK_BUT_INCOMPLETE` | the bytes end **inside** a field — an unterminated varint (§4.1: the `0x80` continuation flag was set but the stream stopped), a fixlen payload (§4.6) shorter than its declared length, or inside a sequence not yet closed; the partial tail is retained for the next `feed` | **yes** — feeding more bytes may complete it |
+| **`INVALID`** | `ERROR` | the bytes are malformed **regardless of what follows**: a reserved fixlen subtype (`0x4`–`0x7`, §4.6), a varint exceeding 64 bits (§4.1), a length or count above its maximum (§6.2), nesting past `MAX_DEPTH` (§4.9), or a sequence-end marker with no open sequence | no — terminal |
 
-There is **no** `finish`/`finalize`/`end` step, and a decoder **must not** provide one
-that reclassifies `INCOMPLETE` as `INVALID`. The status a `feed`/`decode` returns *is*
-the outcome; whether a trailing `INCOMPLETE` is a truncation error is the **caller's**
-decision, judged from its own framing (a length prefix, a datagram boundary, EOF).
+**`INCOMPLETE` is explicitly NOT an error — it is a valid, first-class outcome**,
+returned the same way from a one-shot `decode` and a streaming `feed`. A conformant
+decoder **MUST** report it distinctly and **MUST NOT** fold it into either
+neighbour:
+
+* folding `INCOMPLETE` into `COMPLETE` (silently treating a truncated tail as a
+  finished message) is non-conformant;
+* folding `INCOMPLETE` into `INVALID` (rejecting a stream that was merely split
+  across chunks, or a prefix the caller may still extend) is non-conformant.
+
+**No finalization step — the caller owns end-of-input.** The three outcomes are a
+property of the bytes consumed so far and are computable at **any** byte boundary
+from the decoder's own state. A decoder therefore needs **no** separate
+`finish`/`finalize`/`end` step, and **MUST NOT** provide one that reclassifies
+`INCOMPLETE` as `INVALID`. There is no hidden finalization: the status
+`feed`/`decode` returns *is* the answer. Whether an `INCOMPLETE` result is
+acceptable is the **caller's** decision, not the decoder's — only the caller knows
+its framing:
+
+* a **streaming** caller reads `INCOMPLETE` as "feed me the next chunk";
+* a caller with an **outer frame** (a length prefix, a datagram boundary, EOF)
+  that has delivered all its bytes and still sees `INCOMPLETE` knows the message
+  was **truncated** and treats that as an error **at its own layer**;
+* a **one-shot** caller that requires a whole message inspects the status and
+  accepts only `COMPLETE`, treating `INCOMPLETE` (and `INVALID`) as failure.
+
+The **framing invariant**, expressed purely through the returned status: a valid,
+whole message is consumed **exactly** — it returns `COMPLETE` with nothing left
+pending. Truncation (bytes short of a complete field) returns `INCOMPLETE`;
+trailing bytes that *begin* but do not finish another field also return
+`INCOMPLETE`; trailing bytes that cannot begin any valid field return `INVALID`.
+A lone dangling `0x80` fed on its own returns **`INCOMPLETE`** (not `INVALID`): it
+is a well-formed *prefix* of a varint, and more bytes could complete it. The
+decoder never decides on the caller's behalf that this prefix is "truncated" — it
+reports `INCOMPLETE` and lets the caller's framing rule. (Generated code passes
+this status through verbatim — MESSAGE_SPEC §7.)
 
 ### 5.3 Language-Idiomatic Patterns (encouraged)
 
@@ -493,7 +525,7 @@ should be adapted to the language's conventions; semantics are fixed.
 **Decoder**
 * Initialize with a field handler (callback / visitor / pull-iterator).
 * `feed(bytes)` accepting arbitrarily small chunks, returning the three-valued decode
-  outcome `COMPLETE` / `INCOMPLETE` / `INVALID` (§5.2, MESSAGE_SPEC §7). **No** separate
+  outcome `COMPLETE` / `INCOMPLETE` / `INVALID` (§5.2). **No** separate
   `finish`/`finalize`/`end` step — `INCOMPLETE` is surfaced to the caller, never
   auto-promoted to an error.
 * Per-field: **read** the value into a typed destination, or **skip**. If the language
@@ -557,7 +589,7 @@ st = dec.feed(chunk1); st = dec.feed(chunk2); ...  # each feed returns COMPLETE 
 person = dec.value                      # object assembled incrementally, never fully buffered
 # No finish()/end(): `st` is the outcome so far. The caller accepts `person` once
 # st == COMPLETE and its framing says the input is done; a still-INCOMPLETE status at
-# end-of-input is truncation, judged by the caller (MESSAGE_SPEC §7).
+# end-of-input is truncation, judged by the caller (§5.2).
 ```
 
 **This forces a requirement back onto the corelib API:** the generated layer must be
@@ -580,7 +612,6 @@ buildable purely from the streaming primitives. Concretely, the corelib **must**
 | Field ID range | 0 .. 2,147,483,647 |
 | Unsigned value domain | 64-bit unsigned (0 .. 2⁶⁴ − 1) |
 | Signed value domain | 64-bit signed (−2⁶³ .. 2⁶³ − 1) |
-| Enum value domain | 32-bit signed (−2³¹ .. 2³¹ − 1) |
 | `FIXLEN_MAX` | up to 2,147,483,647 (may be 65,535 on constrained profiles) |
 | `ARRAY_MAX` | up to 2,147,483,647 (may be 65,535 on constrained profiles) |
 | `MAX_DEPTH` | 255 (maximum nested-sequence depth) |
@@ -598,11 +629,11 @@ C/C++ reference exposes these as the `sofab_ret_t` codes / the `Error` enum.)
 | `UsageError` | Invalid usage, e.g. a type mismatch on read. |
 | `BufferFull` | Output buffer overflowed during encoding. |
 | `InvalidArgument` | Invalid argument, e.g. a field ID out of range. |
-| `InvalidMessage` | Malformed message while decoding — malformed **regardless of what follows**: an **overlong (`>64`-bit) varint**, an unbalanced sequence end, an oversized length/count, nesting past `MAX_DEPTH`, invalid UTF-8, etc. Corresponds to the `INVALID` decode outcome (§5.2). **Truncation is _not_ `InvalidMessage`** — see the note below. |
+| `InvalidMessage` | Malformed message while decoding — malformed **regardless of what follows**: an **overlong (`>64`-bit) varint**, an unbalanced sequence end, an oversized length/count, nesting past `MAX_DEPTH`, a reserved fixlen subtype, or an invalid-UTF-8 `string` **when the UTF-8 check is enabled** (§6.4). Corresponds to the `INVALID` decode outcome (§5.2). **Truncation is _not_ `InvalidMessage`** — see the note below. |
 
 **Decode outcome vs. error code.** A decoder's per-`feed`/`decode` result is the
-three-valued **decode outcome** `COMPLETE` / `INCOMPLETE` / `INVALID` (§5.2,
-MESSAGE_SPEC §7), *not* one of the codes in this table. `INVALID` corresponds to
+three-valued **decode outcome** `COMPLETE` / `INCOMPLETE` / `INVALID` (§5.2),
+*not* one of the codes in this table. `INVALID` corresponds to
 `InvalidMessage`; **`INCOMPLETE`** — bytes short of a complete field, i.e. truncation —
 is **not** an error and **must not** be reported as `InvalidMessage`: it is surfaced to
 the caller, who judges it per its own framing. There is **no** `finish`/`finalize` step
@@ -623,6 +654,41 @@ are allowed as long as the baseline meanings above are preserved.
   build), **do not use exceptions.** Return a status code or a result/`Result`-style
   object on the hot path instead, so callers in constrained environments are never forced
   to pay for or handle exceptions.
+
+### 6.4 String Validity: UTF-8 (normative, opt-in check)
+
+A `string` payload is **UTF-8** (§4.6); `blob` is the type for opaque byte
+sequences (the producer-side rule lives in MESSAGE_SPEC §8). A `string` payload
+whose bytes are **not valid UTF-8** is a malformed string, and the **strict,
+conformant** decode behavior is to reject it — an invalid-UTF-8 `string` is the
+`INVALID` decode outcome (§5.2).
+
+The check is deliberately **not** required to be always-on. Its cost falls on the
+hot decode path, and the family's native string types differ:
+
+* **Unicode string types** — Rust `String`, Java/C# `string`, JavaScript strings,
+  Python `str` — cannot even hold non-UTF-8 bytes; their constructors already
+  either reject or lossily replace (U+FFFD).
+* **Byte-container types** — C `char[]`, C++ `std::string`, Go `string`, Zig
+  `[]const u8` — carry arbitrary bytes unchecked.
+
+So a corelib **MAY** gate UTF-8 validation behind a **configuration option** (a
+build or runtime flag), and that option **MAY default to OFF**:
+
+* **check ON** — the decoder **MUST** reject an invalid-UTF-8 `string` as
+  `INVALID` (§5.2). Unicode string types use their **strict / fatal** constructor
+  (not the lossy one); byte-container types add an explicit UTF-8 validation.
+  This is the strict, family-uniform behavior.
+* **check OFF** (permitted default) — invalid-UTF-8 handling is
+  **implementation-defined**: a byte-container type typically preserves the raw
+  bytes; a Unicode string type applies its own constructor policy (e.g. U+FFFD
+  replacement). This trades conformance for zero-cost decoding and is **outside**
+  the strict contract.
+
+**Conformance testing and the SofaBuffers differential fuzzer run with the check
+ON**, so every implementation agrees that an invalid-UTF-8 `string` is rejected.
+A deployment that needs maximum decode throughput and controls both ends may run
+with it off; cross-implementation interop requires it on.
 
 ---
 
@@ -668,13 +734,14 @@ the language's idiomatic convention — `tests/` in Rust and Python,
      assert the result is identical to feeding it all at once. This proves the state
      machine suspends/resumes at any byte boundary.
 5. **Malformed-input tests** — an overlong (`>64`-bit) varint, an unbalanced sequence
-   end, an oversized length/count, nesting past `MAX_DEPTH` → must return the `INVALID`
-   decode outcome (a well-defined error), never crash.
+   end, an oversized length/count, nesting past `MAX_DEPTH`, a reserved fixlen subtype
+   (`0x4`–`0x7`) → must return the `INVALID` decode outcome (a well-defined error),
+   never crash.
 6. **Truncation tests** — a message cut short mid-field (a lone dangling varint such as
    `0x80`, a fixlen payload shorter than its declared length, an unclosed sequence) →
    must return **`INCOMPLETE`**, *not* `INVALID` and *not* `COMPLETE`. It is a
    well-defined non-error outcome; feeding the missing bytes then completes it, and there
-   is no `finish` step that promotes it to an error (§5.2, MESSAGE_SPEC §7).
+   is no `finish` step that promotes it to an error (§5.2).
 7. **Skip tests** — decode while ignoring some fields and whole sub-sequences; assert
    correct resync on the following field.
 
@@ -1030,9 +1097,12 @@ A new `corelib-<lang>` is conformant when:
 - [ ] **Streaming decode** via `feed` of arbitrarily small chunks, push-callback /
       pull-read, lazy field binding, and auto-skip (§5.2), returning the three-valued
       `COMPLETE` / `INCOMPLETE` / `INVALID` outcome with **no** `finish`/`finalize` step —
-      `INCOMPLETE` surfaced, never auto-promoted to an error (§5.2, MESSAGE_SPEC §7).
+      `INCOMPLETE` surfaced, never auto-promoted to an error (§5.2).
 - [ ] Result/error reporting follows the §6.3 baseline codes (or idiomatic exceptions
       where the language uses them by default; return codes / result objects otherwise).
+- [ ] UTF-8 string-validity check per §6.4 — an invalid-UTF-8 `string` is rejected as
+      `INVALID` when the check is enabled; gating it behind an opt-in option (OFF
+      default permitted) is allowed, and conformance tests run with the check ON.
 - [ ] The streaming primitives are sufficient to build a thin **generated-object**
       layer with a dead-simple API that *also* serializes/deserializes in chunks; the
       one-shot `serialize()/deserialize()` helpers are thin wrappers over the streaming
