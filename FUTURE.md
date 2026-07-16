@@ -44,8 +44,9 @@ a wrapper sequence with per-element framing — saving the `sequence start` + `0
 For a scalar array whose schema `count` is fixed and that is always full (e.g.
 `RGB[3]`, `uuid bytes[16]`), the wire could omit `element_count` since both sides
 know it from the schema — saving one byte.
-- **Why deferred:** small win; conflicts with the capacity/partial-fill model
-  (which deliberately puts the actual count on the wire). Only safe for arrays
+- **Why deferred:** small win; conflicts with the fixed-count trailing-default
+  compaction (MESSAGE_SPEC §3, which deliberately puts a `0 .. N` count on the
+  wire so the trailing default run can be elided). Only safe for arrays
   declared "always full."
 - **Impact:** wire (a count-less array variant or a schema "fixed/full" marker) +
   codegen.

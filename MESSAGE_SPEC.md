@@ -92,13 +92,15 @@ A **message-layer** rule; the wire spec is deliberately unaware of it (CORELIB_P
   - a **`struct`/`union`/nested-array element is itself a sequence**, so the
     carve-out above governs it: **always framed, never omitted**, even when all its
     fields equal their defaults; its interior follows the per-field rule
-    recursively.
+    recursively. (One exception: in a **fixed-count** array the *trailing* run of
+    default elements is elided even for sequence-form elements — §3, §5.1.)
 
   A wrapper array is therefore, on the wire, **indistinguishable from a struct
   whose default-valued fields are omitted** — it is the same rule, not an analogy.
   **Scope:** this reaches *only* sequence-form arrays (§5). The compact scalar
-  arrays of §3 are serialized linearly and in full — their elements carry no
-  `(id, type)` header, so sparse omission never applies to them.
+  arrays of §3 are serialized linearly and gap-free — their elements carry no
+  `(id, type)` header, so per-element id-gap omission never applies to them
+  (their only compaction is the trailing-default run of a fixed-count array, §3).
 - **No presence / is-set bit** (proto3-style). The application gives the zero
   value meaning where needed — e.g. a command enum with `NONE = 0` whose handler
   does nothing.
@@ -107,6 +109,9 @@ A **message-layer** rule; the wire spec is deliberately unaware of it (CORELIB_P
   - *absent* → reconstructed as the default (which may be non-empty, e.g.
     `default: [3, 4]`);
   - *explicit empty* → the empty collection, overriding a non-empty default.
+    (A **fixed-count** array has no empty value — it always has `N` logical
+    elements — so its explicit-empty wire form decodes to the `N`-element
+    all-default value, overriding a non-default schema `default`; §3.)
 
   This is what enables a faithful JSON `[]` ↔ SofaBuffers round-trip.
 
@@ -139,22 +144,54 @@ which is what keeps them compact:
 types — they already lower to a single signed/unsigned int — so there is **no new
 wire form** for them; only the schema must permit them as element types.
 
-- `count` in the schema is the array's **capacity** N — a sizing hint, **never on
-  the wire**. The wire carries the **actual** number of elements, `0 .. N`
-  (CORELIB_PLAN §4.7); the decoder validates `≤ N`. `count` is **optional**, exactly
-  like `maxlen`: omit it for a dynamic/unbounded collection (heap targets); provide
-  it so heap-less targets can pre-size the buffer.
+- `count` in the schema declares a **fixed-length** array of exactly N logical
+  elements — **never on the wire**. The wire carries an element count `M`,
+  `0 .. N` (CORELIB_PLAN §4.7), a *compaction* of the N-element value: the
+  trailing run of default elements is elided (normative rule below); `M > N` is
+  `INVALID` (§7). `count` is **optional**, exactly like `maxlen`: omit it for a
+  dynamic/unbounded collection (heap targets); declare it for a fixed-length
+  array — which is also what lets heap-less targets pre-size the buffer.
 - A zero-length array is valid — an **explicit empty array**. Its exact wire form
   (including why an empty fixlen array still carries its `fixlen_word`) is
   byte-level encoding and lives in CORELIB_PLAN §4.7–4.8; all that matters at this
   layer is that an explicitly empty array **is representable** (§2).
-- **No sparse elements here.** A compact scalar array is serialized **linearly and
-  in full**: the count prefix is the actual element number, and each of those
-  elements is present in order with no per-element header — there is nothing to
-  omit. The sparse per-element omission (§2, §5.1) applies **only** to
-  wrapper-sequence arrays (string/blob/struct/union elements), never to these
-  count-prefixed forms. A default-valued *scalar element* stays on the wire; only
-  the array as a whole follows the ordinary ≠-default field test of §2.
+- **No interior sparsity here.** A compact scalar array is serialized
+  **linearly and gap-free**: the `M` elements named by the count prefix are all
+  present, in order, with no per-element header — a default-valued element
+  *before* the last non-default one stays on the wire. The only compaction is
+  the **trailing**-default run of a fixed-count array (below); the id-gap
+  omission of §2/§5.1 applies **only** to wrapper-sequence arrays
+  (string/blob/struct/union elements), never to these count-prefixed forms.
+  The array as a whole follows the ordinary ≠-default field test of §2.
+
+**Fixed-count arrays — under-count is a trailing-default run (normative).**
+A field declared `count: N` is a **fixed-length** array of exactly `N` logical
+elements. Its wire count `M` **MUST** satisfy `0 ≤ M ≤ N`; `M > N` is the
+`INVALID` decode outcome (§7). A wire count `M < N` denotes an array whose last
+`N − M` elements equal the **element default** (the element type's default; its
+zero value when none is defined) — a trailing-default run, elided for
+compactness by the same sparse principle that omits a default-valued scalar
+field (§2). A decoder **MUST** materialize exactly `N` elements — the `M` wire
+elements at positions `[0, M)`, element defaults at `[M, N)` — **regardless of
+its storage model**: a pre-sized fixed array and a growable list MUST both
+recover the same `N`-element value, so the round-trip is identical across
+implementations.
+
+**Canonical encoding.** Whether the field appears at all is the ordinary
+≠-default test of §2, applied to the full `N`-element value; a schema `default`
+shorter than `N` (§6) stands for that default padded to `N` with element
+defaults. When the field is emitted, the encoder **MUST** set `M` to one past
+the index of the last element that differs from the element default, and MUST
+NOT emit the trailing default run. `M = 0` — every element at the element
+default, but the array as a whole differing from its (padded) schema
+`default` — is the explicit empty array of §2, and decodes back to the
+`N`-element all-default value. A decoder still accepts a non-canonical
+encoding that carries trailing default elements; it decodes to the same
+`N`-element value.
+
+(For a **dynamic** array — no `count` — nothing changes: there is no `N` to
+fill to, so a trailing default element is significant and stays on the wire,
+and the wire count is simply the array's length.)
 
 ---
 
@@ -237,7 +274,8 @@ Consequences:
   composite/sequence arrays pay this — the compact scalar arrays of §3 carry no
   per-element headers — and since composite elements are already framed, the growth
   is modest.
-- Array length is bounded by `ID_MAX` (INT32_MAX), the same range as the capacity.
+- Array length is bounded by `ID_MAX` (INT32_MAX), the same range as the schema
+  `count`.
 
 The wrapper sequence carries the array field's own `id` in its parent scope; an
 empty wrapper (a sequence with no children) is the explicit empty array.
@@ -253,12 +291,29 @@ are always present, so they never create a gap). Before applying a wrapper array
 decoder **MUST** initialise every destination slot to its element default — a
 target pre-sized to the schema `count`/`maxlen` on heap-less profiles, or a fresh
 buffer sized to the transmission — then write each present element at `dest[id]`,
-leaving absent ids at their default. **Array length** is recovered as that
-pre-sized capacity, or, for a dynamically sized target, as *highest present id + 1*;
-trailing default elements are therefore indistinguishable from a shorter array
+leaving absent ids at their default. **Array length** is recovered as follows:
+for a **fixed-count** array (`count: N`) it is **`N` for every target** — a
+growable-list target MUST default-fill to `N` exactly like a pre-sized one
+(§3, fixed-count rule), and an element id `≥ N` is `INVALID` (§7); for a
+**dynamic** array (no `count`) it is *highest present id + 1*. Trailing default
+*leaf* elements are therefore indistinguishable from a shorter wire form
 (§2) — by design, and lossless against a default-initialised destination. A decoder
 **MUST** accept these gaps; when the element type has no default, supplying a
 cleanly initialised destination is the application's responsibility.
+
+**Fixed-count wrapper arrays elide the trailing default run — sequence-form
+elements included (normative).** The canonical-encoding rule of §3 applies to a
+wrapper array with `count: N` unchanged: the encoder emits elements only at ids
+`< M`, where `M` is one past the index of the last non-default element. Within
+`[0, M)` the existing rules hold — a default `string`/`blob` element leaves an
+id gap (§2); a sequence-form element is always framed. In the trailing run
+`[M, N)`, however, the elision covers **sequence-form elements too**: a
+trailing all-default `struct`/`union`/nested-array element — which at an
+interior position would encode as an empty frame — is not written at all. This
+is the one place a sequence element may be absent; the decoder recovers it by
+the `N`-fill above, not as a gap. For a **dynamic** array trailing sequence
+elements are **not** elided: with no `N` to fill to, the trailing empty frame
+is exactly what distinguishes `[s, default]` from `[s]` on a growable target.
 
 ### 5.2 The cases
 
@@ -321,9 +376,13 @@ There is no special case beyond "leaf / scalar-array vs. sequence."
 **Map** — there is no distinct map type; a map is `array of struct{ key, value }`
 (a wrapper sequence of two-field structs). Being a sequence-form array it carries
 **no length field**: entries are delimited by the sequence end, each at
-its index id (§5.1). Schema `count` is therefore just an optional **capacity** hint
-(§3) — a heap target omits it for an unbounded map; a heap-less target supplies it
-to pre-size. A "fixed length" is never baked into a map.
+its index id (§5.1). Schema `count` follows the fixed-count rule (§3): a heap
+target omits it for an unbounded map; a heap-less target declares it to
+pre-size — and thereby gets a fixed-length array of exactly `N` entry structs,
+absent entries decoding as all-default entries (the natural "empty slot"
+sentinel for a fixed-capacity map). A length is still never baked into the
+*wire*: entries remain end-delimited and the trailing default run is elided
+(§5.1).
 
 **Recursive types** — a struct may reference itself, directly or through an array
 element, via a `$ref` to a predefined `$defs` struct. This expresses trees and
@@ -377,12 +436,14 @@ rule (§5.3).**
 
 Relaxations carried by the zero-length-array change:
 
-- `items.count` is the **capacity** N and is now **optional** (like `maxlen`):
-  present → heap-less targets can pre-size and the wire carries `0 .. N`; omitted →
-  dynamic/unbounded. It never appears on the wire.
+- `items.count` is **optional** (like `maxlen`): present → the array is
+  **fixed-length** with exactly `N` logical elements (§3) — the wire carries the
+  compacted count `0 .. N`, decode fills back to `N`, and heap-less targets
+  pre-size from it; omitted → dynamic/unbounded. It never appears on the wire.
 - the array `default` may be **shorter than, or empty relative to,** `count`
   (`minItems` dropped; `maxItems ≤ count` kept), so an explicit `default: []` can
-  override a non-empty default (§2).
+  override a non-empty default (§2). For a fixed-count array a shorter `default`
+  stands for its `N`-element padding with element defaults (§3).
 
 Deliberately left for later (cheap to add): deep `default`-value validation for
 composite-element arrays (currently a generic array bounded by `count`).
@@ -405,6 +466,12 @@ This document adds only the obligations on **generated code**:
 - **Bind incrementally.** A generated decoder is driven by the corelib `feed` and
   binds each field the moment it completes, so an object larger than any buffer
   still assembles across chunk boundaries (CORELIB_PLAN §6.1).
+- **Enforce schema bounds as `INVALID`.** The corelib cannot know the schema, so
+  schema-bound violations are detected — and reported — by generated code: a wire
+  element count `M > N` on a fixed-count array, or a wrapper-array element id
+  `≥ N` (§3, §5.1), is malformed input and **MUST** be reported as `INVALID`,
+  the same terminal outcome as the corelib's own (CORELIB_PLAN §5.2) — never as
+  `INCOMPLETE`, and never silently truncated to `N`.
 
 ---
 
