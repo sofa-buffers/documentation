@@ -392,7 +392,8 @@ composite-element arrays (currently a generic array bounded by `count`).
 ## 7. Decode outcomes — what generated code must do
 
 The three-valued decode outcome — `COMPLETE` / `INCOMPLETE` / `INVALID`, the rule
-that `INCOMPLETE` is a first-class non-error, and the no-finalize /
+that `INCOMPLETE` is a first-class non-error, the precedence of `INVALID` over
+`INCOMPLETE` when input is both malformed and truncated, and the no-finalize /
 caller-owns-end-of-input contract — is the **corelib's API contract**, defined
 normatively in [`CORELIB_PLAN.md`](./CORELIB_PLAN.md) §5.2 (error codes: §6.3).
 This document adds only the obligations on **generated code**:
