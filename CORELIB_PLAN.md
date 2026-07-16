@@ -254,8 +254,12 @@ Length range `0 .. 2,147,483,647`. Fixlen subtypes:
 | `0b011` | 0x3 | BLOB (arbitrary binary data)              |
 | `0b100`..`0b111` | 0x4–0x7 | reserved                      |
 
-* For `fp32`/`fp64`, the payload length is 4 / 8 bytes and must be byte-swapped to
-  little-endian on big-endian hosts.
+* For `fp32`/`fp64`, the payload length is **exactly** 4 / 8 bytes, and the value
+  must be byte-swapped to little-endian on big-endian hosts. A `fixlen_word`
+  declaring any other length for these subtypes is malformed — the `INVALID`
+  decode outcome (§5.2) — and a decoder **must** reject it when the `fixlen_word`
+  is read, before consuming (or waiting for) any payload bytes (§5.2, precedence
+  of `INVALID` over `INCOMPLETE`).
 * Float payloads are stored as **raw IEEE-754 little-endian bytes**, so every value —
   including `±0`, `±inf`, and `NaN` — round-trips **bit-for-bit**. The corelib never
   inspects or normalizes the value; `NaN` is just another float payload. (The JSON
@@ -413,7 +417,7 @@ far*:
 |---|---|---|---|
 | **`COMPLETE`** | `OK` | the consumed bytes end **exactly** at a field boundary; a valid message *may* end here (more fields may also still follow) | more valid fields may extend it |
 | **`INCOMPLETE`** | `OK_BUT_INCOMPLETE` | the bytes end **inside** a field — an unterminated varint (§4.1: the `0x80` continuation flag was set but the stream stopped), a fixlen payload (§4.6) shorter than its declared length, or inside a sequence not yet closed; the partial tail is retained for the next `feed` | **yes** — feeding more bytes may complete it |
-| **`INVALID`** | `ERROR` | the bytes are malformed **regardless of what follows**: a reserved fixlen subtype (`0x4`–`0x7`, §4.6), a varint exceeding 64 bits (§4.1), a length or count above its maximum (§6.2), nesting past `MAX_DEPTH` (§4.9), or a sequence-end marker with no open sequence | no — terminal |
+| **`INVALID`** | `ERROR` | the bytes are malformed **regardless of what follows**: a reserved fixlen subtype (`0x4`–`0x7`, §4.6), a fixlen `fp32`/`fp64` whose declared length is not exactly 4 / 8 (§4.6), a varint exceeding 64 bits (§4.1), a length or count above its maximum (§6.2), nesting past `MAX_DEPTH` (§4.9), or a sequence-end marker with no open sequence | no — terminal |
 
 **`INCOMPLETE` is explicitly NOT an error — it is a valid, first-class outcome**,
 returned the same way from a one-shot `decode` and a streaming `feed`. A conformant
@@ -424,6 +428,31 @@ neighbour:
   finished message) is non-conformant;
 * folding `INCOMPLETE` into `INVALID` (rejecting a stream that was merely split
   across chunks, or a prefix the caller may still extend) is non-conformant.
+
+**Precedence — `INVALID` wins over `INCOMPLETE` (normative).** The two
+non-`COMPLETE` outcomes are not symmetric. When the bytes consumed so far
+contain a construct that is malformed **independently of any bytes that might
+follow** — any of the table's `INVALID` conditions: a reserved fixlen subtype,
+an overlong varint, a wrong-width `fp32`/`fp64` fixlen (§4.6), an over-maximum
+length or count, nesting past `MAX_DEPTH`, a sequence-end with no open
+sequence — the outcome is **`INVALID`**, even if the input is *also* truncated
+(ends mid-field or with an open sequence). `INCOMPLETE` is reported **only**
+when every construct consumed so far is well-formed and the bytes simply end
+before the message does; a decoder **MUST NOT** report `INCOMPLETE` for input
+it has already determined to be malformed. No continuation of bytes can make
+such input valid, so `INCOMPLETE` would wrongly invite the caller to feed more.
+(This does not conflict with the anti-folding rule above: a well-formed prefix
+that is merely truncated stays `INCOMPLETE`; only genuinely malformed input is
+`INVALID`.)
+
+Consequently, a decoder **MUST** validate a construct's well-formedness at the
+point its describing bytes are read — the field header, `fixlen_word`, or
+count — before consuming, buffering, or waiting for the payload those bytes
+describe. A decoder that defers the check until the payload has arrived can
+reach end-of-input first and mis-report malformed input as `INCOMPLETE`.
+(Example: `56 0a 59` — a nested `fp64` field whose `fixlen_word` declares
+length 11 ≠ 8, then truncates. The `fixlen_word` alone proves the message
+malformed, so the outcome is `INVALID`, not `INCOMPLETE`.)
 
 **No finalization step — the caller owns end-of-input.** The three outcomes are a
 property of the bytes consumed so far and are computable at **any** byte boundary
@@ -629,7 +658,7 @@ C/C++ reference exposes these as the `sofab_ret_t` codes / the `Error` enum.)
 | `UsageError` | Invalid usage, e.g. a type mismatch on read. |
 | `BufferFull` | Output buffer overflowed during encoding. |
 | `InvalidArgument` | Invalid argument, e.g. a field ID out of range. |
-| `InvalidMessage` | Malformed message while decoding — malformed **regardless of what follows**: an **overlong (`>64`-bit) varint**, an unbalanced sequence end, an oversized length/count, nesting past `MAX_DEPTH`, a reserved fixlen subtype, or an invalid-UTF-8 `string` **when the UTF-8 check is enabled** (§6.4). Corresponds to the `INVALID` decode outcome (§5.2). **Truncation is _not_ `InvalidMessage`** — see the note below. |
+| `InvalidMessage` | Malformed message while decoding — malformed **regardless of what follows**: an **overlong (`>64`-bit) varint**, an unbalanced sequence end, an oversized length/count, nesting past `MAX_DEPTH`, a reserved fixlen subtype, a wrong-width `fp32`/`fp64` fixlen (§4.6), or an invalid-UTF-8 `string` **when the UTF-8 check is enabled** (§6.4). Corresponds to the `INVALID` decode outcome (§5.2). **Truncation is _not_ `InvalidMessage`** — see the note below — but input that is *both* malformed and truncated *is*: `INVALID` takes precedence over `INCOMPLETE` (§5.2). |
 
 **Decode outcome vs. error code.** A decoder's per-`feed`/`decode` result is the
 three-valued **decode outcome** `COMPLETE` / `INCOMPLETE` / `INVALID` (§5.2),
