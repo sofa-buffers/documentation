@@ -646,6 +646,42 @@ buildable purely from the streaming primitives. Concretely, the corelib **must**
 | `MAX_DEPTH` | 255 (maximum nested-sequence depth) |
 | Scalar value width | 64-bit by default |
 
+These are **format-wide ceilings**: properties of the wire format itself, identical for
+every implementation, and exceeding one is `INVALID` (§5.2). They are not a protection
+mechanism against a hostile sender — that is §6.2.1.
+
+#### 6.2.1 Receiver-side technical limits (normative)
+
+A field whose schema declares no bound (`maxlen`/`count` omitted — MESSAGE_SPEC §7.2) is
+**unbounded**: the receiver allocates whatever the message specifies. That lets the
+**sender** dictate the **receiver's** allocation, so an implementation **MAY** be
+configured with **generic maximum limits** — capping the array count, string length and
+blob length it will materialize (e.g. `max_dyn_array_count`, `max_dyn_string_len`,
+`max_dyn_blob_len`).
+
+These limits are **configuration, not schema**:
+
+* They are chosen by the **implementer/deployment** to protect the system, **independent
+  of any message definition**, and are **not** part of the wire contract.
+* Exceeding one is a **policy rejection by the receiver — a category distinct from
+  `INVALID`**. The bytes are well-formed and decode successfully under a looser or unset
+  limit; nothing about the *message* is malformed. An implementation **MUST NOT** report
+  it as `InvalidMessage`, and **MUST NOT** fold it into the `INVALID` decode outcome.
+* They **MUST NOT** be applied to a field the schema already bounds. There the schema
+  bound governs and its violation is `INVALID` (MESSAGE_SPEC §7, §7.1) — a schema bound is
+  a statement about *validity*, a receiver limit is a statement about *capacity*.
+* Two receivers configured with **different** limits reaching different outcomes on the
+  same message is **not** an interop failure and **not** a conformance defect. Conformance
+  testing therefore compares implementations configured with **identical** limits.
+
+A limit **MUST** be enforced at the count/length header — before the allocation it is
+meant to prevent — for the same reason `INVALID` is decided there (§5.2).
+
+*(This is the receiver-capacity analogue of the `MAX_DEPTH` stack bound: both cap what the
+receiver will commit on untrusted input. `MAX_DEPTH` is a fixed format-wide ceiling and its
+violation is malformed input; a `max_dyn_*` limit is deployment-configurable and its
+violation is not.)*
+
 ### 6.3 Error Handling (normative)
 
 Every fallible operation reports one of the following result codes. The names below are
@@ -659,6 +695,7 @@ C/C++ reference exposes these as the `sofab_ret_t` codes / the `Error` enum.)
 | `BufferFull` | Output buffer overflowed during encoding. |
 | `InvalidArgument` | Invalid argument, e.g. a field ID out of range. |
 | `InvalidMessage` | Malformed message while decoding — malformed **regardless of what follows**: an **overlong (`>64`-bit) varint**, an unbalanced sequence end, an oversized length/count, nesting past `MAX_DEPTH`, a reserved fixlen subtype, a wrong-width `fp32`/`fp64` fixlen (§4.6), or an invalid-UTF-8 `string` **when the UTF-8 check is enabled** (§6.4). Corresponds to the `INVALID` decode outcome (§5.2). **Truncation is _not_ `InvalidMessage`** — see the note below — but input that is *both* malformed and truncated *is*: `INVALID` takes precedence over `INCOMPLETE` (§5.2). |
+| `LimitExceeded` | A configured **receiver-side technical limit** (§6.2.1) was exceeded on a schema-**unbounded** field — e.g. `max_dyn_array_count` / `max_dyn_string_len` / `max_dyn_blob_len`. The message is **well-formed**: the same bytes decode successfully under a looser or unset limit, so this says nothing about the message's validity and is **not** `InvalidMessage` and **not** the `INVALID` decode outcome (§5.2). It is a terminal, receiver-local **policy** rejection. Never raised for a field the schema bounds — there an over-bound value is `InvalidMessage` (MESSAGE_SPEC §7, §7.1). |
 
 **Decode outcome vs. error code.** A decoder's per-`feed`/`decode` result is the
 three-valued **decode outcome** `COMPLETE` / `INCOMPLETE` / `INVALID` (§5.2),
@@ -668,6 +705,17 @@ is **not** an error and **must not** be reported as `InvalidMessage`: it is surf
 the caller, who judges it per its own framing. There is **no** `finish`/`finalize` step
 that turns an `INCOMPLETE` into `InvalidMessage`. The codes in this table cover the
 *other* fallible operations (encoding, type-mismatched reads, argument checks).
+
+**`LimitExceeded` is the one decode-path exception to that split.** A configured
+receiver-side limit (§6.2.1) terminates a decode, but the input is *well-formed*, so the
+outcome is **not** `INVALID` — and the three-valued outcome has no value for "valid, but
+more than I am configured to accept". An implementation **MUST** keep the two
+distinguishable to the caller (a limit rejection means *"raise my limit or the sender must
+send less"*; `INVALID` means *"these bytes are broken"*). **How** it is surfaced is an API
+shape this document deliberately leaves open: either as a **fourth decode outcome**
+alongside `COMPLETE`/`INCOMPLETE`/`INVALID`, or as a terminal failure carrying the
+`LimitExceeded` code on the error channel. Whichever an implementation picks, it **MUST
+NOT** report a limit rejection as `InvalidMessage`.
 
 This set is the common baseline. **Language- or platform-specific conditions may extend
 or refine it** — e.g. an I/O error from a stream sink, an allocation failure in a managed
