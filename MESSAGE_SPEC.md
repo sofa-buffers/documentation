@@ -505,10 +505,13 @@ SHOULD avoid embedded NUL or use `blob` (interop note in
 [`CORELIB_PLAN.md`](./CORELIB_PLAN.md) §6.4).
 
 Whether and when UTF-8 validity is *checked* — the **`SOFAB_STRICT_UTF8`**
-option, its **ON** default, its symmetric encode-and-decode enforcement
-(`INVALID` on decode, `InvalidArgument` on encode), the pinned OFF behavior
-(*raw or reject, never silent lossy*), cross-chunk semantics, and the
-compile-out allowance for footprint profiles — is corelib behavior, defined
+option (byte-container targets; Unicode-string targets are always strict), its
+**ON** default, its symmetric encode-and-decode enforcement (`INVALID` on
+decode, `InvalidArgument` on encode), the pinned OFF behavior (*raw or reject,
+never silent lossy*), the skip exemption (skipped fields are never validated —
+wire validity of unread content is the producer's responsibility), cross-chunk
+semantics, and the compile-out allowance for footprint profiles — is corelib
+behavior, defined
 normatively in [`CORELIB_PLAN.md`](./CORELIB_PLAN.md) §6.4. The option is a
 **validation policy, never a wire-format switch**: it decides accept-vs-reject
 and never changes how valid data is encoded, so peers with different settings

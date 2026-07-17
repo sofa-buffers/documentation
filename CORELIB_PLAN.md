@@ -701,9 +701,10 @@ different settings interoperate on all valid data.
 **Two states:**
 
 * **ON (default)** — invalid UTF-8 is rejected, **symmetrically**:
-  * *decode*: an invalid-UTF-8 `string` payload is the `INVALID` outcome
-    (§5.2) — the same terminal class as the other malformed-message conditions,
-    *not* a length/limit error.
+  * *decode*: an invalid-UTF-8 `string` payload **that is read** is the
+    `INVALID` outcome (§5.2) — the same terminal class as the other
+    malformed-message conditions, *not* a length/limit error. Skipped fields
+    are never validated (below).
   * *encode*: a `string` value that cannot be encoded as valid UTF-8 —
     non-UTF-8 bytes in a byte-container type, an **unpaired surrogate** in a
     UTF-16/Unicode type — is refused with `InvalidArgument` (§6.3). Encode-side
@@ -722,9 +723,9 @@ language's native string representation, and only two behaviors are permitted:
   zero-copy allowed. Interpreting code points is the application's job.
 * **Unicode string types** (Rust `String`, Java/C# `string`, JavaScript
   strings, Python `str`) cannot hold non-UTF-8 bytes; their only non-mutating
-  option is the **strict / fatal** constructor, so for them OFF behaves like ON
-  (reject). In practice `SOFAB_STRICT_UTF8` genuinely toggles behavior only for
-  byte-container targets.
+  option is the **strict / fatal** constructor, so they are **always strict**.
+  For them the option is a no-op and they **MAY omit it entirely** (documented
+  as always-ON); only **byte-container targets MUST expose it**.
 
 **Silent replacement is forbidden in every mode (normative).** An
 implementation **MUST NOT** substitute `U+FFFD` (or any replacement), drop
@@ -744,21 +745,24 @@ the same profile allowance as `FIXLEN_MAX`/`ARRAY_MAX` (§6.2). Such a build is
 a documented non-strict build; the target's CI **MUST** still build and
 conformance-test the check-ON configuration.
 
-**Where the knob lives** follows where the corelib already keeps its
-configuration:
+**Where the knob lives** (byte-container targets) follows where the corelib
+already keeps its configuration:
 
-* *compile-time* (C `#define`, a Rust/Zig build feature) — for footprint
-  targets; compiled OFF means the validation code is not compiled in.
-* *runtime option* (a decoder/encoder configuration field in Go, Python,
-  TypeScript, Java, C#) — slots next to the existing decode limits.
+* *compile-time* (C `#define`, a Zig build feature) — for footprint targets;
+  compiled OFF means the validation code is not compiled in.
+* *runtime option* (a decoder/encoder configuration field, e.g. in Go) — slots
+  next to the existing decode limits. C++ may use either, per its existing
+  configuration style.
 
 **The `utf8_valid` primitive.** Where generated code — not the corelib —
-materializes the string (Rust, Java, C#, Zig), the corelib exposes a
-`utf8_valid(bytes) -> bool` primitive and the generator emits an
+materializes the string in a **byte-container** target (Zig), the corelib
+exposes a `utf8_valid(bytes) -> bool` primitive and the generator emits an
 **unconditional** call to it. The gate lives inside the primitive: it folds to
 `true` when compiled OFF and reads the runtime option otherwise. Flipping the
 flag therefore never requires regenerating code, and generated code is
-identical across build configurations.
+identical across build configurations. (In codegen-materialized
+Unicode-string targets — Rust, Java, C# — generated code simply uses the
+strict constructor; no primitive is needed.)
 
 **Validator correctness (normative).** `utf8_valid` — and any corelib-internal
 check — is a real UTF-8 validator, not a byte-range shortcut; this is a
@@ -789,11 +793,16 @@ assembly buffer is required. The outcome mapping follows §5.2:
   continuation byte) is malformed regardless of what follows → the decoder MAY
   report `INVALID` immediately, mid-payload (§5.2 precedence).
 
-**Skipped fields are validated too.** With the check ON, `INVALID` is a
-property of the *message* (§6.3), not of the fields a handler chooses to read:
-the decoder **MUST** validate every `string` payload it consumes, including
-fields the handler skips, so the outcome is independent of the reading
-pattern. (With the check OFF, skipping remains pure discard.)
+**Skipped fields are never validated (normative).** Skipping stays what it is
+everywhere else in the design: a length jump over bytes that are not
+inspected (§5.2). UTF-8 validation runs only where a `string` is
+**materialized** — read into a destination — never on skip, in any mode.
+Wire validity of unread content is the **producer's** responsibility
+(MESSAGE_SPEC §8's MUST NOT, enforced by the strict encode side); protobuf
+treats unknown/unread fields the same way. The decode outcome may therefore
+depend on which fields the handler reads; the shared vectors and the
+differential-fuzzer drivers read **every** field, so conformance results
+remain deterministic.
 
 **Conformance testing and the SofaBuffers differential fuzzer run with the
 check ON** — which is also the shipped default — so every implementation agrees
@@ -1174,12 +1183,14 @@ A new `corelib-<lang>` is conformant when:
       `INCOMPLETE` surfaced, never auto-promoted to an error (§5.2).
 - [ ] Result/error reporting follows the §6.3 baseline codes (or idiomatic exceptions
       where the language uses them by default; return codes / result objects otherwise).
-- [ ] UTF-8 string-validity contract per §6.4 — `SOFAB_STRICT_UTF8` present (ON by
-      default; constrained profiles may default OFF / compile it out), symmetric
-      (`INVALID` on decode, `InvalidArgument` on encode), OFF pinned to raw-or-reject
-      (never silent `U+FFFD`/lossy), `utf8_valid` primitive exposed where codegen
-      materializes strings, chunk boundaries never change the outcome, and
-      conformance tests run with the check ON.
+- [ ] UTF-8 string-validity contract per §6.4 — byte-container targets expose
+      `SOFAB_STRICT_UTF8` (ON by default; constrained profiles may default OFF /
+      compile it out), Unicode-string targets are always strict (option omittable),
+      symmetric (`INVALID` on decode, `InvalidArgument` on encode), OFF pinned to
+      raw-or-reject (never silent `U+FFFD`/lossy), skipped fields never validated
+      (skip stays a length jump), `utf8_valid` primitive exposed where codegen
+      materializes byte-container strings, chunk boundaries never change the
+      outcome, and conformance tests run with the check ON.
 - [ ] The streaming primitives are sufficient to build a thin **generated-object**
       layer with a dead-simple API that *also* serializes/deserializes in chunks; the
       one-shot `serialize()/deserialize()` helpers are thin wrappers over the streaming
