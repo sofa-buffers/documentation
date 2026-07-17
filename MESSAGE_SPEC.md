@@ -53,8 +53,13 @@ header and marker bytes are never spelled out here — that's CORELIB_PLAN's job
 | `blob` | fixlen, subtype blob (§4.6) | opaque bytes |
 
 **Schema attributes that never reach the wire:** `decimals`, `unit`,
-`description`, `deprecated` (docs/tooling hints), and `maxlen` (a
-validation/sizing bound on string/blob byte length).
+`description`, `deprecated` (docs/tooling hints), and `maxlen` (a **normative
+validity bound** on string/blob byte length — §7).
+
+Not reaching the wire is not the same as not binding it: `maxlen` — like an array's
+`count` (§3) — is **not encoded**, but it **does constrain what is valid**. A
+`string`/`blob` longer than its `maxlen` is malformed input, exactly as an array
+element count over its `count` is (§7).
 
 ---
 
@@ -469,10 +474,45 @@ This document adds only the obligations on **generated code**:
   still assembles across chunk boundaries (CORELIB_PLAN §6.1).
 - **Enforce schema bounds as `INVALID`.** The corelib cannot know the schema, so
   schema-bound violations are detected — and reported — by generated code: a wire
-  element count `M > N` on a fixed-count array, or a wrapper-array element id
-  `≥ N` (§3, §5.1), is malformed input and **MUST** be reported as `INVALID`,
+  element count `M > N` on a fixed-count array, a wrapper-array element id
+  `≥ N` (§3, §5.1), or a `string`/`blob` whose wire byte length exceeds its schema
+  `maxlen` (§2), is malformed input and **MUST** be reported as `INVALID`,
   the same terminal outcome as the corelib's own (CORELIB_PLAN §5.2) — never as
-  `INCOMPLETE`, and never silently truncated to `N`.
+  `INCOMPLETE`, and never silently truncated to the bound.
+
+### 7.1 A declared bound binds every target (normative)
+
+A schema `count: N` on an array and a `maxlen: L` on a `string`/`blob` are
+**wire-validity bounds**, not sizing hints. They bind **every implementation,
+regardless of its allocation strategy**: a heap-less target that pre-sizes a buffer
+from the bound and a heap target that allocates per message **MUST both reject**
+input that exceeds it, with the same `INVALID` outcome.
+
+A decoder **MUST NOT** accept an over-bound value merely because its storage happens
+to be able to hold it. Whether the bound is enforced must not be an emergent property
+of the memory model — two conformant implementations of the same schema **MUST** agree
+on which messages are valid.
+
+*(Rationale: a bound that only heap-less profiles honour is not a contract — it makes
+the same bytes valid on one implementation and invalid on another, which is precisely
+the silent interop failure a shared wire format exists to prevent. `count` already
+binds every target for the analogous reason: §3, §5.1.)*
+
+### 7.2 Omitting a bound declares an unbounded field (normative)
+
+A `string`/`blob` without `maxlen`, or an array without `count`, is **unbounded**: the
+receiver **MUST** materialize as much as the received message specifies. An unbounded
+field has no schema bound to violate, so its length alone can never yield `INVALID` —
+the format-wide ceilings of CORELIB_PLAN §6.2 still apply.
+
+This form is available only to targets that allocate dynamically. A heap-less profile
+requires the bound in order to pre-size, so a schema intended for one **MUST** declare
+it.
+
+Because an unbounded field lets the **sender** dictate the **receiver's** allocation,
+an implementation may additionally be configured with generic, schema-independent
+receiver limits — a **policy** mechanism deliberately distinct from schema-bound
+validity. See CORELIB_PLAN §6.2.1.
 
 ---
 
