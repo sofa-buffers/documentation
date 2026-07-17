@@ -518,13 +518,43 @@ validity. See CORELIB_PLAN §6.2.1.
 
 ## 8. String validity: UTF-8
 
-A `string` value is **UTF-8** (§1); `blob` (§1) is the type for opaque byte
-sequences. Producers — hand-written or generated — **MUST NOT** emit non-UTF-8
-bytes in a `string`; put arbitrary bytes in a `blob`.
+A `string` value is **UTF-8** (§1), length-framed on the wire — no other
+encoding, no BOM, no terminator. `blob` (§1) is the type for opaque byte
+sequences. That is the whole type distinction: `string` means *UTF-8 text*, and
+producers — hand-written or generated — **MUST NOT** emit non-UTF-8 bytes in a
+`string`; put arbitrary bytes in a `blob`.
 
-Whether and when a *decoder* validates UTF-8 — the strict check that rejects an
-invalid-UTF-8 `string` as `INVALID`, the opt-in configuration around it, and its
-permitted OFF default — is corelib behavior, defined in
-[`CORELIB_PLAN.md`](./CORELIB_PLAN.md) §6.4. Conformance testing and the
-SofaBuffers differential fuzzer run with the check **ON**, so
-cross-implementation interop requires it on.
+**Representation is the language's business, not the format's.** A
+byte-container string type (C `char[]`, C++ `std::string`, Go `string`, Zig
+`[]const u8`) stores the wire bytes verbatim — no transcoding, zero-copy
+allowed; interpreting code points (iterating, rendering, normalizing) is the
+application's job, not SofaBuffers'. A Unicode string type (Java/C# `string`,
+JavaScript strings, Python `str`, Rust `String`) transcodes at the boundary
+using its **strict** converters.
+
+**No silent replacement, ever (normative).** An implementation **MUST NOT**
+substitute `U+FFFD` (or otherwise mutate, truncate, or empty) an invalid-UTF-8
+`string`, in any mode, in either direction: invalid bytes are either preserved
+verbatim (byte-container types, check OFF) or rejected. Lossy replacement is a
+data mutation — it breaks the byte-exact round-trip the conformance vectors
+require and silently rewrites payloads in any decode→re-encode relay.
+
+**Embedded U+0000 is permitted** in a `string`: it is valid UTF-8 and the wire
+is length-framed. Producers whose consumers use NUL-terminated conventions
+SHOULD avoid embedded NUL or use `blob` (interop note in
+[`CORELIB_PLAN.md`](./CORELIB_PLAN.md) §6.4).
+
+Whether and when UTF-8 validity is *checked* — the **`SOFAB_STRICT_UTF8`**
+option (byte-container targets; Unicode-string targets are always strict), its
+**ON** default, its symmetric encode-and-decode enforcement (`INVALID` on
+decode, `InvalidArgument` on encode), the pinned OFF behavior (*raw or reject,
+never silent lossy*), the skip exemption (skipped fields are never validated —
+wire validity of unread content is the producer's responsibility), cross-chunk
+semantics, and the compile-out allowance for footprint profiles — is corelib
+behavior, defined
+normatively in [`CORELIB_PLAN.md`](./CORELIB_PLAN.md) §6.4. The option is a
+**validation policy, never a wire-format switch**: it decides accept-vs-reject
+and never changes how valid data is encoded, so peers with different settings
+interoperate on all valid data. Conformance testing and the SofaBuffers
+differential fuzzer run with the check **ON** — which is also the shipped
+default — so cross-implementation interop requires it on.

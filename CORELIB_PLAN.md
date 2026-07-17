@@ -417,7 +417,7 @@ far*:
 |---|---|---|---|
 | **`COMPLETE`** | `OK` | the consumed bytes end **exactly** at a field boundary; a valid message *may* end here (more fields may also still follow) | more valid fields may extend it |
 | **`INCOMPLETE`** | `OK_BUT_INCOMPLETE` | the bytes end **inside** a field — an unterminated varint (§4.1: the `0x80` continuation flag was set but the stream stopped), a fixlen payload (§4.6) shorter than its declared length, or inside a sequence not yet closed; the partial tail is retained for the next `feed` | **yes** — feeding more bytes may complete it |
-| **`INVALID`** | `ERROR` | the bytes are malformed **regardless of what follows**: a reserved fixlen subtype (`0x4`–`0x7`, §4.6), a fixlen `fp32`/`fp64` whose declared length is not exactly 4 / 8 (§4.6), a varint exceeding 64 bits (§4.1), a length or count above its maximum (§6.2), nesting past `MAX_DEPTH` (§4.9), or a sequence-end marker with no open sequence | no — terminal |
+| **`INVALID`** | `ERROR` | the bytes are malformed **regardless of what follows**: a reserved fixlen subtype (`0x4`–`0x7`, §4.6), a fixlen `fp32`/`fp64` whose declared length is not exactly 4 / 8 (§4.6), a varint exceeding 64 bits (§4.1), a length or count above its maximum (§6.2), nesting past `MAX_DEPTH` (§4.9), a sequence-end marker with no open sequence, or an invalid-UTF-8 `string` payload when the strict UTF-8 check is enabled (§6.4) | no — terminal |
 
 **`INCOMPLETE` is explicitly NOT an error — it is a valid, first-class outcome**,
 returned the same way from a one-shot `decode` and a streaming `feed`. A conformant
@@ -693,7 +693,7 @@ C/C++ reference exposes these as the `sofab_ret_t` codes / the `Error` enum.)
 | `None` / `OK` | Success. |
 | `UsageError` | Invalid usage, e.g. a type mismatch on read. |
 | `BufferFull` | Output buffer overflowed during encoding. |
-| `InvalidArgument` | Invalid argument, e.g. a field ID out of range. |
+| `InvalidArgument` | Invalid argument, e.g. a field ID out of range — or, with the strict UTF-8 check ON (§6.4), a `string` value that cannot be encoded as valid UTF-8 (non-UTF-8 bytes, an unpaired surrogate). |
 | `InvalidMessage` | Malformed message while decoding — malformed **regardless of what follows**: an **overlong (`>64`-bit) varint**, an unbalanced sequence end, an oversized length/count, nesting past `MAX_DEPTH`, a reserved fixlen subtype, a wrong-width `fp32`/`fp64` fixlen (§4.6), or an invalid-UTF-8 `string` **when the UTF-8 check is enabled** (§6.4). Corresponds to the `INVALID` decode outcome (§5.2). **Truncation is _not_ `InvalidMessage`** — see the note below — but input that is *both* malformed and truncated *is*: `INVALID` takes precedence over `INCOMPLETE` (§5.2). |
 | `LimitExceeded` | A configured **receiver-side technical limit** (§6.2.1) was exceeded on a schema-**unbounded** field — e.g. `max_dyn_array_count` / `max_dyn_string_len` / `max_dyn_blob_len`. The message is **well-formed**: the same bytes decode successfully under a looser or unset limit, so this says nothing about the message's validity and is **not** `InvalidMessage` and **not** the `INVALID` decode outcome (§5.2). It is a terminal, receiver-local **policy** rejection. Never raised for a field the schema bounds — there an over-bound value is `InvalidMessage` (MESSAGE_SPEC §7, §7.1). |
 
@@ -732,40 +732,131 @@ are allowed as long as the baseline meanings above are preserved.
   object on the hot path instead, so callers in constrained environments are never forced
   to pay for or handle exceptions.
 
-### 6.4 String Validity: UTF-8 (normative, opt-in check)
+### 6.4 String Validity: UTF-8 (`SOFAB_STRICT_UTF8`, normative)
 
 A `string` payload is **UTF-8** (§4.6); `blob` is the type for opaque byte
 sequences (the producer-side rule lives in MESSAGE_SPEC §8). A `string` payload
-whose bytes are **not valid UTF-8** is a malformed string, and the **strict,
-conformant** decode behavior is to reject it — an invalid-UTF-8 `string` is the
-`INVALID` decode outcome (§5.2).
+whose bytes are **not valid UTF-8** is a malformed string: the strict,
+conformant behavior is to reject it — on decode as the `INVALID` outcome
+(§5.2), on encode as `InvalidArgument` (§6.3).
 
-The check is deliberately **not** required to be always-on. Its cost falls on the
-hot decode path, and the family's native string types differ:
+UTF-8 validation is gated behind one canonical configuration option,
+**`SOFAB_STRICT_UTF8`** (adapt the name to the language's casing/idiom). It is
+a **validation policy, never a wire-format switch**: it only decides
+accept-vs-reject and never changes how valid data is encoded, so two peers with
+different settings interoperate on all valid data.
 
-* **Unicode string types** — Rust `String`, Java/C# `string`, JavaScript strings,
-  Python `str` — cannot even hold non-UTF-8 bytes; their constructors already
-  either reject or lossily replace (U+FFFD).
-* **Byte-container types** — C `char[]`, C++ `std::string`, Go `string`, Zig
-  `[]const u8` — carry arbitrary bytes unchecked.
+**Two states:**
 
-So a corelib **MAY** gate UTF-8 validation behind a **configuration option** (a
-build or runtime flag), and that option **MAY default to OFF**:
+* **ON (default)** — invalid UTF-8 is rejected, **symmetrically**:
+  * *decode*: an invalid-UTF-8 `string` payload **that is read** is the
+    `INVALID` outcome (§5.2) — the same terminal class as the other
+    malformed-message conditions, *not* a length/limit error. Skipped fields
+    are never validated (below).
+  * *encode*: a `string` value that cannot be encoded as valid UTF-8 —
+    non-UTF-8 bytes in a byte-container type, an **unpaired surrogate** in a
+    UTF-16/Unicode type — is refused with `InvalidArgument` (§6.3). Encode-side
+    validation is what enforces MESSAGE_SPEC §8's producer-side **MUST NOT**:
+    without it, a strict ecosystem's own encoders can still emit bytes its
+    decoders reject.
+* **OFF (opt-out)** — validation is waived, but the permitted behavior is
+  pinned, not implementation-defined: **raw or reject, never silent lossy**
+  (next paragraph).
 
-* **check ON** — the decoder **MUST** reject an invalid-UTF-8 `string` as
-  `INVALID` (§5.2). Unicode string types use their **strict / fatal** constructor
-  (not the lossy one); byte-container types add an explicit UTF-8 validation.
-  This is the strict, family-uniform behavior.
-* **check OFF** (permitted default) — invalid-UTF-8 handling is
-  **implementation-defined**: a byte-container type typically preserves the raw
-  bytes; a Unicode string type applies its own constructor policy (e.g. U+FFFD
-  replacement). This trades conformance for zero-cost decoding and is **outside**
-  the strict contract.
+**OFF is constrained (normative).** With the check OFF, handling follows the
+language's native string representation, and only two behaviors are permitted:
 
-**Conformance testing and the SofaBuffers differential fuzzer run with the check
-ON**, so every implementation agrees that an invalid-UTF-8 `string` is rejected.
-A deployment that needs maximum decode throughput and controls both ends may run
-with it off; cross-implementation interop requires it on.
+* **Byte-container string types** (C `char[]`, C++ `std::string`, Go `string`,
+  Zig `[]const u8`) store the wire bytes **verbatim** — no transcoding,
+  zero-copy allowed. Interpreting code points is the application's job.
+* **Unicode string types** (Rust `String`, Java/C# `string`, JavaScript
+  strings, Python `str`) cannot hold non-UTF-8 bytes; their only non-mutating
+  option is the **strict / fatal** constructor, so they are **always strict**.
+  For them the option is a no-op and they **MAY omit it entirely** (documented
+  as always-ON); only **byte-container targets MUST expose it**.
+
+**Silent replacement is forbidden in every mode (normative).** An
+implementation **MUST NOT** substitute `U+FFFD` (or any replacement), drop
+bytes, or produce an empty/absent value for an invalid-UTF-8 `string`, in
+either direction, in any mode (MESSAGE_SPEC §8). Beware that platform default
+encoders are often lossy — Java's `getBytes(UTF_8)` and JavaScript's
+`TextEncoder` replace unpaired surrogates with `U+FFFD` — use the strict/fatal
+variants.
+
+**Default.** `SOFAB_STRICT_UTF8` defaults to **ON**, making the default
+configuration the same configuration the shared vectors (§7.1) and the
+differential fuzzer test. For Unicode-string targets strictness is already paid
+for by the mandatory transcode; for byte-container targets a proper validator
+is cheap next to decode itself. **Constrained/footprint profiles MAY default to
+OFF or compile the check out entirely** (zero `.text`/`.rodata` cost when OFF) —
+the same profile allowance as `FIXLEN_MAX`/`ARRAY_MAX` (§6.2). Such a build is
+a documented non-strict build; the target's CI **MUST** still build and
+conformance-test the check-ON configuration.
+
+**Where the knob lives** (byte-container targets) follows where the corelib
+already keeps its configuration:
+
+* *compile-time* (C `#define`, a Zig build feature) — for footprint targets;
+  compiled OFF means the validation code is not compiled in.
+* *runtime option* (a decoder/encoder configuration field, e.g. in Go) — slots
+  next to the existing decode limits. C++ may use either, per its existing
+  configuration style.
+
+**The `utf8_valid` primitive.** Where generated code — not the corelib —
+materializes the string in a **byte-container** target (Zig), the corelib
+exposes a `utf8_valid(bytes) -> bool` primitive and the generator emits an
+**unconditional** call to it. The gate lives inside the primitive: it folds to
+`true` when compiled OFF and reads the runtime option otherwise. Flipping the
+flag therefore never requires regenerating code, and generated code is
+identical across build configurations. (In codegen-materialized
+Unicode-string targets — Rust, Java, C# — generated code simply uses the
+strict constructor; no primitive is needed.)
+
+**Validator correctness (normative).** `utf8_valid` — and any corelib-internal
+check — is a real UTF-8 validator, not a byte-range shortcut; this is a
+security surface. It **MUST** reject overlong encodings (including `C0 80`,
+Java's "Modified UTF-8" NUL), surrogate code points `U+D800`–`U+DFFF`, and code
+points above `U+10FFFF`. Most languages have a stdlib validator to gate; C and
+C++ need a hand-written, tested one.
+
+**Embedded U+0000 is allowed.** NUL is valid UTF-8 and representable in the
+length-framed payload (§4.6); the validator **MUST NOT** reject it, while the
+overlong form `C0 80` **MUST** be rejected like any overlong encoding. Interop
+note (non-normative): NUL-terminated consumers truncate at the first NUL — the
+corelib API is length-delimited (§4.6), but producers targeting such consumers
+SHOULD avoid embedded NUL or use `blob` (MESSAGE_SPEC §8).
+
+**Cross-chunk semantics (normative).** UTF-8 validity is a property of the
+string field's **complete payload** — the fixlen length is known up front — and
+a chunk boundary **MUST NOT** affect the outcome. A decoder MAY validate
+incrementally, provided it carries validator state across `feed` calls; no
+assembly buffer is required. The outcome mapping follows §5.2:
+
+* a multi-byte sequence split at an **end-of-chunk** is a well-formed prefix →
+  `INCOMPLETE` (more bytes may complete it). Reporting `INVALID` — or dropping
+  the string — for a merely-split payload is the §5.2 anti-folding violation;
+* a multi-byte sequence truncated at **end-of-payload** (declared length
+  reached mid-sequence) → `INVALID`: no further bytes belong to this string;
+* a byte that cannot begin or continue any valid sequence (e.g. `0xFF`, a bare
+  continuation byte) is malformed regardless of what follows → the decoder MAY
+  report `INVALID` immediately, mid-payload (§5.2 precedence).
+
+**Skipped fields are never validated (normative).** Skipping stays what it is
+everywhere else in the design: a length jump over bytes that are not
+inspected (§5.2). UTF-8 validation runs only where a `string` is
+**materialized** — read into a destination — never on skip, in any mode.
+Wire validity of unread content is the **producer's** responsibility
+(MESSAGE_SPEC §8's MUST NOT, enforced by the strict encode side); protobuf
+treats unknown/unread fields the same way. The decode outcome may therefore
+depend on which fields the handler reads; the shared vectors and the
+differential-fuzzer drivers read **every** field, so conformance results
+remain deterministic.
+
+**Conformance testing and the SofaBuffers differential fuzzer run with the
+check ON** — which is also the shipped default — so every implementation agrees
+that an invalid-UTF-8 `string` is rejected. A deployment that needs maximum
+decode throughput and controls both ends may switch it off; cross-implementation
+interop requires it on.
 
 ---
 
@@ -1140,9 +1231,14 @@ A new `corelib-<lang>` is conformant when:
       `INCOMPLETE` surfaced, never auto-promoted to an error (§5.2).
 - [ ] Result/error reporting follows the §6.3 baseline codes (or idiomatic exceptions
       where the language uses them by default; return codes / result objects otherwise).
-- [ ] UTF-8 string-validity check per §6.4 — an invalid-UTF-8 `string` is rejected as
-      `INVALID` when the check is enabled; gating it behind an opt-in option (OFF
-      default permitted) is allowed, and conformance tests run with the check ON.
+- [ ] UTF-8 string-validity contract per §6.4 — byte-container targets expose
+      `SOFAB_STRICT_UTF8` (ON by default; constrained profiles may default OFF /
+      compile it out), Unicode-string targets are always strict (option omittable),
+      symmetric (`INVALID` on decode, `InvalidArgument` on encode), OFF pinned to
+      raw-or-reject (never silent `U+FFFD`/lossy), skipped fields never validated
+      (skip stays a length jump), `utf8_valid` primitive exposed where codegen
+      materializes byte-container strings, chunk boundaries never change the
+      outcome, and conformance tests run with the check ON.
 - [ ] The streaming primitives are sufficient to build a thin **generated-object**
       layer with a dead-simple API that *also* serializes/deserializes in chunks; the
       one-shot `serialize()/deserialize()` helpers are thin wrappers over the streaming
