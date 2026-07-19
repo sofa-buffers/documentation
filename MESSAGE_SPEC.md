@@ -514,6 +514,60 @@ an implementation may additionally be configured with generic, schema-independen
 receiver limits — a **policy** mechanism deliberately distinct from schema-bound
 validity. See CORELIB_PLAN §6.2.1.
 
+### 7.3 A header wire type that contradicts the schema (normative)
+
+Every declared type maps to exactly one wire type (§1); a `fixlen` type maps additionally
+to exactly one subtype (`fp32`, `fp64`, `string`, `blob`). A field whose header carries a
+different wire type — or, for `fixlen`, a different subtype — than the one its declared
+type maps to **MUST** be **skipped**, exactly as a field with an unknown id is skipped
+(CORELIB_PLAN §5.2). A decoder **MUST NOT** report such a field as `INVALID`, and **MUST
+NOT** decode its payload into the declared field.
+
+The check reaches exactly as far as the wire format distinguishes, and no further: `u8`,
+`u16`, `u32`, `u64`, `boolean`, `enum` and `bitfield` all map to the unsigned-integer wire
+type, so a header carrying that type is well-formed for every one of them. Value-range
+conformance is not a wire-type question and is outside this clause.
+
+*(Rationale: a decoder must already have a path for a field it cannot use — the unknown-id
+skip. A field whose wire type contradicts the schema is the same situation, so it takes the
+same path; reporting `INVALID` instead would create a second, divergent handling of "a
+field this decoder cannot consume" where one is already specified. Because the mismatch is
+detected against the schema, generated code is what detects it — the corelib is
+schema-agnostic (§7). This clause nevertheless constrains the observable outcome, not which
+layer produces it: an object-API profile that hands the schema to the corelib as a
+descriptor table and checks there is equally conformant.)*
+
+### 7.4 A field id repeated within one scope (normative)
+
+Ids are unique within a sequence scope (CORELIB_PLAN §3), so an encoding that repeats one
+is **not well-formed** and producers **MUST NOT** emit it. A decoder **MUST** nevertheless
+process it deterministically, and **MUST NOT** report it as `INVALID`.
+
+For each field id in a scope, the **last** occurrence applies. The rule binds **per field
+id, not per sequence**: a sequence opened again **continues** its scope, because a sequence
+opens an id scope *and nothing more* (CORELIB_PLAN §3) and so carries no value of its own.
+Children set by an earlier opening whose ids do not recur in a later one **are retained**.
+This covers structs (§4.1) and unions (§4.2).
+
+An **array wrapper is the exception**: the wrapper *is* the value of its array field — that
+is why arrays are carried in a wrapper rather than by repeating one id, and how an
+explicitly empty array is represented (§5). A later occurrence therefore **replaces** the
+array, discarding elements from earlier occurrences.
+
+An occurrence skipped under §7.3 is **not** an occurrence for this clause: a correctly
+typed earlier occurrence survives a mis-typed later one.
+
+```
+seq[10]( [3:blob] x )  seq[10]( [1:fp64] y )   →  nested{ bytes_field = x, f64 = y }
+```
+
+*(Rationale: "the last occurrence wins" is already the universal behaviour for a repeated
+scalar; this clause extends the same rule to nested scopes by applying it where a value
+actually lives — per field id within a scope, and to an array wrapper as a whole. Neither
+case is `INVALID`, because rejecting a repeated id would oblige every decoder to track
+which ids it has already seen at every level of nesting, up to `MAX_DEPTH`. The rule above
+is the one a streaming decoder follows with no bookkeeping at all.)*
+
 ---
 
 ## 8. String validity: UTF-8
