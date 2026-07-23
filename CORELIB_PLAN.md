@@ -155,8 +155,28 @@ value 16384    -> 0x80 0x80 0x01
 ```
 
 A decoder must accumulate into at least a 64-bit register and shift by 7 per byte.
-Implementations should guard against overlong / overflowing varints (more bytes than
-a 64-bit value can hold) and report a malformed-message error.
+
+**Minimality on encode, tolerance on decode (normative).** An encoder **MUST**
+emit every varint in its **minimal form** — the fewest bytes that represent the
+value, i.e. no continuation byte that contributes only zero high bits (the final
+byte is `0x00` only in the single-byte encoding of value `0`). This is the
+byte-level face of the single-canonical-encoding rule (MESSAGE_SPEC §2): `5` is
+`0x05`, never `0x85 0x00`.
+
+A decoder **MUST accept** a non-minimal varint that stays within the 64-bit
+bound below, decode it to the value it denotes, and — because every re-encode is
+canonical — emit the minimal form on any re-encode. A non-minimal encoding is
+therefore **not** the `INVALID` outcome (§5.2); it is normalized away, exactly
+as a non-canonical trailing-default array run is (MESSAGE_SPEC §3). The rule
+applies wherever a varint appears: field headers, `fixlen_word`s, array element
+counts, element values, and inside skipped fields.
+
+**The 64-bit bound (normative).** A varint encoding **exceeds the 64-bit value
+range** — the `INVALID` decode outcome (§5.2) — iff it is longer than **10
+bytes**, or any of its payload bits would land at bit position ≥ 64 (a tenth
+byte with payload above `0x01`). Both tests are on the *encoding*, not the
+decoded value: an 11-byte encoding is `INVALID` even when its surplus bytes are
+zero, and a decoder **MUST NOT** silently discard overflowing high bits.
 
 ### 4.2 Zig-Zag Encoding (signed integers only)
 
