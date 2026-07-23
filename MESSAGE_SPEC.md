@@ -74,6 +74,9 @@ A **message-layer** rule; the wire spec is deliberately unaware of it (CORELIB_P
   **iff its value ≠ its default**; an omitted field is reconstructed as the
   default. (A `u8` left at default `7` never appears on the wire.) There is **no
   dense mode** — so every message value has exactly **one** canonical encoding.
+  (The same principle reaches the byte level: every varint is emitted in its
+  minimal form, and a decoder accepts-and-normalizes a non-minimal one —
+  CORELIB_PLAN §4.1.)
 - **The ≠-default test is per field — except for a `sequence`.** A `sequence`
   (a `struct` or `union`, and the wrapper form of a composite/dynamic-element
   array — §5, §6) is **never omitted as a whole**. It is **always framed** with
