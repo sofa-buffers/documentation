@@ -284,7 +284,11 @@ Length range `0 .. 2,147,483,647`. Fixlen subtypes:
   including `±0`, `±inf`, and `NaN` — round-trips **bit-for-bit**. The corelib never
   inspects or normalizes the value; `NaN` is just another float payload. (The JSON
   test-vector format cannot represent `NaN`, so the shared vectors omit it; conformance
-  tests must compare floats by **bit pattern**, not `==`, since `NaN != NaN`.)
+  tests must compare floats by **bit pattern**, not `==`, since `NaN != NaN`.) In
+  particular an `fp32` **signaling** NaN **must not** be quieted: a language whose
+  native float value is a 64-bit double (JS/TS, Python, Dart, …) destroys the sNaN the
+  instant the payload passes through that double, breaking this rule — see the
+  normative implementation requirement in §6.5.
 * For `string`, the payload is the raw UTF-8 bytes **without** a trailing null byte.
   Callers that need a null-terminated string must append it themselves.
 * For `blob`, the payload is opaque.
@@ -877,6 +881,77 @@ check ON** — which is also the shipped default — so every implementation agr
 that an invalid-UTF-8 `string` is rejected. A deployment that needs maximum
 decode throughput and controls both ends may switch it off; cross-implementation
 interop requires it on.
+
+### 6.5 Float Bit-Exactness: the fp32 signaling-NaN hazard (normative)
+
+§4.6 requires every float — `NaN` included — to round-trip **bit-for-bit**: the
+corelib never inspects or normalizes a float payload. For `fp64` this is free —
+a language's native 64-bit double holds all 64 bits verbatim. **`fp32` carries a
+representation hazard that several languages fall into, and this section makes
+the guard against it normative.**
+
+**The hazard.** IEEE-754 distinguishes two kinds of `NaN` by the most-significant
+mantissa bit (the *quiet* bit): a **quiet** NaN has it set, a **signaling** NaN
+has it clear (with a non-zero payload). Widening an `fp32` to a wider float is
+**not** bit-preserving for a signaling NaN — the IEEE `fp32 → fp64` widening
+**sets the quiet bit**, converting an `fp32` sNaN into a qNaN:
+
+```
+fp32 sNaN   0x7F80_0001   ── widen to double ──▶   qNaN   0x7FC0_0001
+                    ▲ quiet bit 0 (signaling)               ▲ quiet bit 1 (quiet)
+```
+
+The sNaN payload is destroyed **the instant the value passes through the wider
+float**, and no later code can recover it — the bits are simply gone. If a
+decoder carries an `fp32` payload to the consumer (or to its own re-encode) as a
+widened double, then a decode → re-encode **loses the sNaN** and the wire bytes
+change — a §4.6 violation.
+
+**Affected languages.** The hazard is acute — and unavoidable via the value
+alone — wherever the language's **only** (or default) float value type is a
+64-bit double, so any `fp32` handed to user/generated code is *already* widened:
+
+* **JavaScript / TypeScript** — every `number` is a double; there is no `fp32`
+  value type.
+* **Python** — `float` is a double.
+* **Dart** — the only floating type is `double`.
+* **Lua** (default build), and any other language whose sole float value is a
+  double, or that materializes `fp32` by first widening it.
+
+Languages with a native non-widening 32-bit float type (`f32` / `float` in Rust,
+C, C++, Go, Java, C#, Zig) are **not** structurally forced into the hazard — but
+an implementation there **MUST STILL NOT** introduce it by routing an `fp32`
+round-trip through a `double` (e.g. a generic "read as double" helper).
+
+**Requirement (normative).** An implementation **MUST** reproduce the exact 4
+wire bytes of every `fp32` payload — signaling NaN included — across
+decode → re-encode, at **every** `fp32` position: a **scalar** `fp32` (§4.6)
+**and** each element of an **`fp32` array** (§4.8). Concretely:
+
+* The float **value** delivered to a value consumer **MAY** be a widened double
+  — a value consumer only needs to know it is `NaN`. But a **bit-exact** consumer
+  (transcode, round-trip, any re-encode) **MUST** be able to obtain the payload's
+  **raw wire bytes** and re-emit them **verbatim** — it **MUST NOT** re-encode an
+  `fp32` from the widened value.
+* This holds on **every** decode surface the implementation exposes — push /
+  visitor, streaming, and pull / cursor alike (a guard added to one surface but
+  not another is the recurring defect class this section exists to prevent).
+* `fp64` needs no such channel: a native double round-trips its own sNaN.
+
+**How (guidance).** Deliver the `fp32` payload the same way a `string`/`blob`
+payload is delivered — as the raw little-endian wire bytes (a zero-copy view or a
+32-bit bits accessor) — *alongside* the convenience `value`, and re-encode by
+writing those bytes directly (never `setFloat32` / reinterpret-from-double). Gate
+the raw channel as opt-in if a per-element view would burden value-only array
+decoding.
+
+**Testing (normative).** Because the JSON test vectors cannot represent `NaN`
+(§4.6, §7.1), this is verified by an **implementation-level** suite, not the
+shared vectors: assert that a signaling, quiet, and negative `fp32` NaN each
+round-trips **bit-for-bit** at both a scalar `fp32` position and an `fp32`-array
+position, across decode → re-encode **and** any materialized walk, on **every**
+decode surface. The SofaBuffers differential harness (Crucible) additionally
+checks that all language drivers agree bit-for-bit on every `fp32` NaN.
 
 ---
 
