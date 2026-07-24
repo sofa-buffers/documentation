@@ -907,43 +907,57 @@ decoder carries an `fp32` payload to the consumer (or to its own re-encode) as a
 widened double, then a decode → re-encode **loses the sNaN** and the wire bytes
 change — a §4.6 violation.
 
-**Affected languages.** The hazard is acute — and unavoidable via the value
-alone — wherever the language's **only** (or default) float value type is a
-64-bit double, so any `fp32` handed to user/generated code is *already* widened:
+**Which implementations must act — and which need do nothing.** The extra
+handling in this section is required **only** where the language has **no native
+`fp32` value type** and must represent every `fp32` as a 64-bit double, so any
+`fp32` handed to user/generated code is *already* widened and the sNaN is
+*already* gone:
 
 * **JavaScript / TypeScript** — every `number` is a double; there is no `fp32`
   value type.
 * **Python** — `float` is a double.
 * **Dart** — the only floating type is `double`.
 * **Lua** (default build), and any other language whose sole float value is a
-  double, or that materializes `fp32` by first widening it.
+  double, or that materializes `fp32` only by first widening it.
 
-Languages with a native non-widening 32-bit float type (`f32` / `float` in Rust,
-C, C++, Go, Java, C#, Zig) are **not** structurally forced into the hazard — but
-an implementation there **MUST STILL NOT** introduce it by routing an `fp32`
-round-trip through a `double` (e.g. a generic "read as double" helper).
+**Languages with a real `fp32` type need no special handling — nothing to do.**
+Where the target has a native, non-widening 32-bit float (`f32` / `float` in
+Rust, C, C++, Go, Java, C#, Zig), the natural implementation already keeps the
+payload in that `fp32` type end-to-end — a plain 4-byte load/store, no `fp64` in
+the round-trip path — so a signaling NaN round-trips bit-for-bit **on its own**.
+Such a target satisfies §4.6 for free; the raw-bytes channel below is neither
+required nor needed. (The only thing to avoid is *gratuitously* widening an
+`fp32` to a `double` and back, which no idiomatic `fp32`-typed implementation
+does anyway.)
 
-**Requirement (normative).** An implementation **MUST** reproduce the exact 4
-wire bytes of every `fp32` payload — signaling NaN included — across
-decode → re-encode, at **every** `fp32` position: a **scalar** `fp32` (§4.6)
-**and** each element of an **`fp32` array** (§4.8). Concretely:
+**Requirement (normative).** The §4.6 outcome is universal — for **every**
+implementation, decode → re-encode of any `fp32` payload (signaling NaN
+included) **MUST** reproduce the exact 4 wire bytes, at **every** `fp32`
+position: a **scalar** `fp32` (§4.6) **and** each element of an **`fp32` array**
+(§4.8). What differs is only *how* a target meets it:
 
-* The float **value** delivered to a value consumer **MAY** be a widened double
-  — a value consumer only needs to know it is `NaN`. But a **bit-exact** consumer
-  (transcode, round-trip, any re-encode) **MUST** be able to obtain the payload's
-  **raw wire bytes** and re-emit them **verbatim** — it **MUST NOT** re-encode an
-  `fp32` from the widened value.
-* This holds on **every** decode surface the implementation exposes — push /
-  visitor, streaming, and pull / cursor alike (a guard added to one surface but
-  not another is the recurring defect class this section exists to prevent).
-* `fp64` needs no such channel: a native double round-trips its own sNaN.
+* **Native-`fp32` targets** meet it **for free** (above): no raw channel, no
+  extra code.
+* **Double-only targets** cannot meet it through the widened value, so they
+  **MUST** provide a **raw-wire-bytes** path for bit-exact consumers (transcode,
+  round-trip, any re-encode) that re-emits those bytes **verbatim** — and **MUST
+  NOT** re-encode an `fp32` from the widened value. The convenience **value**
+  handed to a value consumer **MAY** stay a widened double — it only needs to
+  know the value is `NaN`.
+* Either way this holds on **every** decode surface the implementation exposes —
+  push / visitor, streaming, and pull / cursor alike (a guard added to one
+  surface but not another is the recurring defect class this section exists to
+  prevent).
+* `fp64` never needs the raw path, in any language: a native double round-trips
+  its own sNaN.
 
-**How (guidance).** Deliver the `fp32` payload the same way a `string`/`blob`
-payload is delivered — as the raw little-endian wire bytes (a zero-copy view or a
-32-bit bits accessor) — *alongside* the convenience `value`, and re-encode by
-writing those bytes directly (never `setFloat32` / reinterpret-from-double). Gate
-the raw channel as opt-in if a per-element view would burden value-only array
-decoding.
+**How (double-only targets only).** Deliver the `fp32` payload the same way a
+`string`/`blob` payload is delivered — as the raw little-endian wire bytes (a
+zero-copy view or a 32-bit bits accessor) — *alongside* the convenience `value`,
+and re-encode by writing those bytes directly (never `setFloat32` /
+reinterpret-from-double). Gate the raw channel as opt-in if a per-element view
+would burden value-only array decoding. (Native-`fp32` targets skip this
+entirely.)
 
 **Testing (normative).** Because the JSON test vectors cannot represent `NaN`
 (§4.6, §7.1), this is verified by an **implementation-level** suite, not the
