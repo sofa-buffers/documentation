@@ -669,24 +669,24 @@ A corelib has **two** kinds of users, and the API must serve both:
 > chunks**.
 
 **Generated-object API must be dead simple.** A human using a generated `Person`
-object should think in terms of *fields and (de)serialize*, never in terms of varints,
-field IDs, sequence markers, or buffers. Target roughly this ergonomics (names adapted
-per language):
+object should think in terms of *fields, encode and decode*, never in terms of
+varints, field IDs, sequence markers, or buffers. Target roughly this ergonomics
+(names adapted to the language's casing, see §6.1.1):
 
 ```
 person = Person()           # plain typed fields: person.name, person.age, person.tags[]
 person.name = "Ada"
 person.age  = 36
 
-bytes = person.serialize()              # one-shot convenience
-person2 = Person.deserialize(bytes)     # one-shot convenience
+bytes   = person.encode()               # one-shot convenience
+person2 = Person.decode(bytes)          # one-shot convenience
 ```
 
 * Generated fields are ordinary typed members with language-natural accessors;
   IDs/types/order come from the schema and are hidden inside the generated code.
 * Nested schema messages become nested generated objects; repeated fields become the
   language's natural list/array type.
-* Provide one-line `serialize()` / `deserialize()` convenience methods for the
+* Provide one-line `encode()` / `decode()` convenience methods for the
   90% case (message fits comfortably in memory).
 
 **But generated objects must ALSO stream in chunks.** The convenience methods are
@@ -695,7 +695,7 @@ large objects never force a full in-memory buffer:
 
 ```
 # streaming OUT: feed an existing ostream / sink; bytes leave as the buffer fills
-person.serialize_to(ostream)            # writes via the corelib flush callback / sink
+person.serialize(ostream)               # writes via the corelib flush callback / sink
 
 # streaming IN: drive a decoder fed with arbitrarily small chunks
 dec = Person.decoder()                  # a generated reader bound to the corelib istream
@@ -710,13 +710,43 @@ person = dec.value                      # object assembled incrementally, never 
 buildable purely from the streaming primitives. Concretely, the corelib **must**:
 
 * Let the generator drive encoding through the **same flush-callback / sink + buffer
-  swap** mechanism (§5.1), so `serialize_to` works with an output buffer smaller than
+  swap** mechanism (§5.1), so `serialize` works with an output buffer smaller than
   the object.
 * Let the generator drive decoding through the **push-feed + pull-read / visitor**
   mechanism (§5.2), so a generated decoder can consume **arbitrarily small `feed`
   chunks** and bind each decoded field straight into the object's member — including
   descending into nested generated objects via `read_sequence` and resuming a
   half-built object across chunk boundaries.
+#### 6.1.1 Canonical names for the generated-object layer (normative)
+
+Generated types land in the **user's** namespace, and every extra spelling a port
+invents — `serialize_to`, `to_bytes`, `from_bytes`, `decode_from`, `decode_into`,
+`marshal`, `unmarshal` — is one more name a developer has to learn per language for
+an operation that is identical everywhere. The set is therefore closed. Adapt only
+the **casing/idiom** (`try_decode` / `tryDecode` / `TryDecode`), never the words.
+
+Two pairs, split by who the caller is:
+
+| name | kind | purpose |
+|---|---|---|
+| `encode()` | instance | one-shot: produce the complete message as bytes |
+| `decode(bytes)` | static / free | one-shot: build the object from a complete message; fails only in the language's own way (exception / panic-free variant below) |
+| `try_decode(bytes)` | static / free | the fallible form of `decode` for languages that return results rather than throw; returns the object or the §6.3 error |
+| `serialize(ostream)` | instance | streaming out: write the object's fields into a corelib output stream (§5.1) |
+| `deserialize(istream, …)` | instance | streaming in: the per-field hook the corelib's decoder calls (visitor/callback, §5.2) |
+| `decoder()` | static / free | streaming in: obtain the generated reader that `feed`s arbitrarily small chunks |
+
+`encode` / `decode` are the **convenience** layer users reach for; `serialize` /
+`deserialize` are the **streaming** pair that talks to the corelib, and the
+convenience pair is a thin wrapper over it (§6.1). A port **MUST NOT** add a second
+name for either — no `serialize_to` alongside `serialize`, no `from_bytes` alongside
+`decode`. Language-mandated extras stay allowed where the ecosystem requires them
+(a `Display`/`ToString`, a serde/`IXmlSerializable` bridge, an idiomatic constructor);
+they are not alternative entry points into the wire format.
+
+Anything below this layer — `feed`, `read_*`, `write_*`, `sequence_*` — is corelib
+API (§6) and keeps its own names; it is not part of the generated object's surface.
+
 ### 6.2 Limits & Constants (normative)
 
 | Constant | Value |
@@ -1168,9 +1198,9 @@ Concise, runnable examples — in the language's idiomatic pattern — for each 
   with an output buffer smaller than the whole message.
 * **OStream** — the output-stream / writer-sink wrapper.
 * **IStream** — the input-stream / push-feed wrapper.
-* **Generator** — using generated object code (the one-shot `serialize()` /
-  `deserialize()` helpers *and* the streaming `serialize_to` / decoder path). This
-  is the most common real-world use case, so show it explicitly.
+* **Generator** — using generated object code (the one-shot `encode()` / `decode()`
+  helpers *and* the streaming `serialize` / `decoder()` path, §6.1.1). This is the
+  most common real-world use case, so show it explicitly.
 
 ### 9.6 `## Memory handling`
 
@@ -1417,8 +1447,8 @@ A new `corelib-<lang>` is conformant when:
       outcome, and conformance tests run with the check ON.
 - [ ] The streaming primitives are sufficient to build a thin **generated-object**
       layer with a dead-simple API that *also* serializes/deserializes in chunks; the
-      one-shot `serialize()/deserialize()` helpers are thin wrappers over the streaming
-      path (§6.1).
+      one-shot `encode()/decode()` helpers are thin wrappers over the streaming path,
+      and the generated surface uses only the closed name set of §6.1.1 (§6.1).
 - [ ] All shared **test vectors** pass for both encode and decode, plus chunked,
       roundtrip, malformed, and skip tests (§7).
 - [ ] `assets/` populated per §8 — branding from `documentation`, `test_vectors.json`
