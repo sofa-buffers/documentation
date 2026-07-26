@@ -77,16 +77,50 @@ A **message-layer** rule; the wire spec is deliberately unaware of it (CORELIB_P
   (The same principle reaches the byte level: every varint is emitted in its
   minimal form, and a decoder accepts-and-normalizes a non-minimal one —
   CORELIB_PLAN §4.1.)
-- **The ≠-default test is per field — except for a `sequence`.** A `sequence`
-  (a `struct` or `union`, and the wrapper form of a composite/dynamic-element
-  array — §5, §6) is **never omitted as a whole**. It is **always framed** with
-  `sequence_begin`/`sequence_end`, and the ≠-default test is applied
-  **recursively to its child fields**. A nested object all of whose fields equal
-  their default is therefore emitted as an **empty wrapper sequence** (the two
-  bytes `sequence_begin(id)` + `sequence_end`), **not** dropped. *Rationale:* a
-  whole-object comparison would depend on struct padding and in-memory layout and
-  could not be reproduced identically across languages; a per-field rule is
-  portable and keeps the encoding canonical.
+- **The ≠-default test is per field — a `sequence` follows it through a derived
+  predicate.** A `sequence` (a `struct` or `union`, and the wrapper form of a
+  composite/dynamic-element array — §5, §6) opens an id scope and *nothing more*
+  (CORELIB_PLAN §3), so it carries no value of its own to compare. The test is
+  therefore **derived from its children**:
+  - a sequence is **emitted empty** when every one of its child fields is omitted
+    by the per-field rule above — applied **recursively**, so an all-default
+    subtree reduces to nothing at every level;
+  - a sequence-typed **field MUST be omitted** iff it would be emitted empty
+    **and** its **absence reconstructs the same value** as the empty frame. For a
+    `struct` or `union` the second condition **always holds**: a decoder
+    initialises every field to its default, and an empty union means "no option
+    active" → `default_id` (§4.2) — which is exactly what absence yields. For the
+    wrapper form of an array it holds **iff the field's declared `default` is the
+    empty collection** (the default when none is declared);
+  - otherwise the sequence is **framed** with `sequence_begin`/`sequence_end`. In
+    particular an array whose declared `default` is **non-empty** is emitted as an
+    **empty wrapper** when its value is the empty collection: there *absent* means
+    that non-empty default, so the empty frame is the only encoding of "explicitly
+    empty" (*Empty ≠ absent* below, §3).
+
+  A decoder **MUST accept** a sequence that is present but empty where the rule
+  above omits it. That is a **non-canonical encoding of the same value**, and a
+  re-encode normalizes it away — exactly as a non-minimal varint (CORELIB_PLAN
+  §4.1) and a trailing default array run (§3) are normalized. Both forms decode
+  identically, so an encoder that always framed stays interoperable in both
+  directions.
+
+  **Consequence — an all-default message encodes to zero bytes.** With every
+  sequence omitted, a message whose every field equals its default is the **empty
+  byte string** (already true today for a schema with no sequence field). It is a
+  valid message denoting the all-default value; the decode outcome for a
+  zero-length input is CORELIB_PLAN §5.2, and a transport that cannot carry a
+  zero-length payload must frame it explicitly.
+
+  *Rationale:* the predicate is the **conjunction of the per-field tests the
+  encoder already performs**, never a whole-object byte comparison — struct
+  padding and in-memory layout never enter it, and a non-zero nested default is
+  handled by the same per-field test as everywhere else. §3 and §5.1 already
+  require exactly this composite predicate in order to elide a trailing
+  all-default *sequence-form element*, so no new machinery is introduced. Framing
+  an all-default subtree costs two bytes per sequence node (more for a large id —
+  CORELIB_PLAN §4.3) and carries no information: with no presence bit (below),
+  *absent* and *present-but-empty* are the same value.
 - **Sparse omission reaches into wrapper-array elements (leaf elements only).**
   A wrapper-sequence array (§5) *is* a sequence and its elements *are* its child
   fields (`id = index`, §5.1), so the per-field rule above applies to them with no
@@ -97,11 +131,16 @@ A **message-layer** rule; the wire spec is deliberately unaware of it (CORELIB_P
     element leaves an id **gap** on the wire. (A decoder still accepts a present,
     default-valued element for robustness, but a conformant encoder never emits
     one — so the encoding stays canonical.)
-  - a **`struct`/`union`/nested-array element is itself a sequence**, so the
-    carve-out above governs it: **always framed, never omitted**, even when all its
-    fields equal their defaults; its interior follows the per-field rule
-    recursively. (One exception: in a **fixed-count** array the *trailing* run of
-    default elements is elided even for sequence-form elements — §3, §5.1.)
+  - a **`struct`/`union`/nested-array element is itself a sequence** and, inside a
+    wrapper, stays **always framed, never omitted**, even when all its fields equal
+    their defaults; its interior follows the per-field rule recursively. The
+    field-level omission rule above deliberately does **not** reach array
+    *elements*: element **presence is what carries the array's length** (§5.1 —
+    *highest present id + 1* for a dynamic array), so dropping an all-default
+    element would change the decoded length, not merely the bytes. (One exception:
+    in a **fixed-count** array the *trailing* run of default elements is elided
+    even for sequence-form elements — there the length is `N` regardless — §3,
+    §5.1.)
 
   A wrapper array is therefore, on the wire, **indistinguishable from a struct
   whose default-valued fields are omitted** — it is the same rule, not an analogy.
@@ -120,6 +159,11 @@ A **message-layer** rule; the wire spec is deliberately unaware of it (CORELIB_P
     (A **fixed-count** array has no empty value — it always has `N` logical
     elements — so its explicit-empty wire form decodes to the `N`-element
     all-default value, overriding a non-default schema `default`; §3.)
+  - when the field's `default` **is** the empty collection, *absent* and *explicit
+    empty* denote the **same value**; the two wire forms are interchangeable and
+    the **canonical** one is *absent* — the sequence is omitted (≠-default bullet
+    above). The distinction is observable only for a field whose declared
+    `default` is non-empty.
 
   This is what enables a faithful JSON `[]` ↔ SofaBuffers round-trip.
 
@@ -193,9 +237,11 @@ the index of the last element that differs from the element default, and MUST
 NOT emit the trailing default run. `M = 0` — every element at the element
 default, but the array as a whole differing from its (padded) schema
 `default` — is the explicit empty array of §2, and decodes back to the
-`N`-element all-default value. A decoder still accepts a non-canonical
-encoding that carries trailing default elements; it decodes to the same
-`N`-element value.
+`N`-element all-default value. (When it does **not** differ from that padded
+default, the ordinary ≠-default test omits the field entirely instead — §2; for
+the wrapper form that means the wrapper sequence is not emitted at all.)
+A decoder still accepts a non-canonical encoding that carries trailing default
+elements; it decodes to the same `N`-element value.
 
 (For a **dynamic** array — no `count` — nothing changes: there is no `N` to
 fill to, so a trailing default element is significant and stays on the wire,
@@ -319,9 +365,13 @@ id gap (§2); a sequence-form element is always framed. In the trailing run
 trailing all-default `struct`/`union`/nested-array element — which at an
 interior position would encode as an empty frame — is not written at all. This
 is the one place a sequence element may be absent; the decoder recovers it by
-the `N`-fill above, not as a gap. For a **dynamic** array trailing sequence
-elements are **not** elided: with no `N` to fill to, the trailing empty frame
-is exactly what distinguishes `[s, default]` from `[s]` on a growable target.
+the `N`-fill above, not as a gap. When the elision leaves **no element at all**
+(`M = 0`, an all-default array), the wrapper sequence itself is **omitted** by
+the ≠-default rule of §2 — unless the field's declared `default` is non-empty,
+where the empty wrapper is retained as the explicit-empty form. For a
+**dynamic** array trailing sequence elements are **not** elided: with no `N` to
+fill to, the trailing empty frame is exactly what distinguishes `[s, default]`
+from `[s]` on a growable target.
 
 ### 5.2 The cases
 
