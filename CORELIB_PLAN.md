@@ -715,9 +715,8 @@ C/C++ reference exposes these as the `sofab_ret_t` codes / the `Error` enum.)
 | Code | Meaning |
 |------|---------|
 | `None` / `OK` | Success. |
-| `UsageError` | Invalid usage, e.g. a type mismatch on read. |
 | `BufferFull` | Output buffer overflowed during encoding. |
-| `InvalidArgument` | Invalid argument, e.g. a field ID out of range — or, with the strict UTF-8 check ON (§6.4), a `string` value that cannot be encoded as valid UTF-8 (non-UTF-8 bytes, an unpaired surrogate). |
+| `InvalidArgument` | Invalid argument — a field ID out of range, a scalar width that is not 1/2/4/8 bytes, a descriptor field type that does not exist — or, with the strict UTF-8 check ON (§6.4), a `string` value that cannot be encoded as valid UTF-8 (non-UTF-8 bytes, an unpaired surrogate). |
 | `InvalidMessage` | Malformed message while decoding — malformed **regardless of what follows**: an **overlong (`>64`-bit) varint**, an unbalanced sequence end, an oversized length/count, nesting past `MAX_DEPTH`, a reserved fixlen subtype, a wrong-width `fp32`/`fp64` fixlen (§4.6), or an invalid-UTF-8 `string` **when the UTF-8 check is enabled** (§6.4). Corresponds to the `INVALID` decode outcome (§5.2). **Truncation is _not_ `InvalidMessage`** — see the note below — but input that is *both* malformed and truncated *is*: `INVALID` takes precedence over `INCOMPLETE` (§5.2). |
 | `LimitExceeded` | A configured **receiver-side technical limit** (§6.2.1) was exceeded on a schema-**unbounded** field — e.g. `max_dyn_array_count` / `max_dyn_string_len` / `max_dyn_blob_len`. The message is **well-formed**: the same bytes decode successfully under a looser or unset limit, so this says nothing about the message's validity and is **not** `InvalidMessage` and **not** the `INVALID` decode outcome (§5.2). It is a terminal, receiver-local **policy** rejection. Never raised for a field the schema bounds — there an over-bound value is `InvalidMessage` (MESSAGE_SPEC §7, §7.1). |
 
@@ -728,7 +727,15 @@ three-valued **decode outcome** `COMPLETE` / `INCOMPLETE` / `INVALID` (§5.2),
 is **not** an error and **must not** be reported as `InvalidMessage`: it is surfaced to
 the caller, who judges it per its own framing. There is **no** `finish`/`finalize` step
 that turns an `INCOMPLETE` into `InvalidMessage`. The codes in this table cover the
-*other* fallible operations (encoding, type-mismatched reads, argument checks).
+*other* fallible operations (encoding, argument checks).
+
+**A type-mismatched read is not an error at all.** Binding a read whose declared type
+contradicts the field on the wire is the MESSAGE_SPEC §7.3 case: the field **MUST** be
+skipped like an unknown id, leaving the destination untouched — it is neither
+`InvalidMessage` nor an argument error, and a decode that meets nothing else stays
+`COMPLETE`. There is therefore **no** result code for "invalid usage": every remaining
+caller mistake is an out-of-range argument (`InvalidArgument`) and every remaining
+malformed input is `InvalidMessage`.
 
 **`LimitExceeded` is the one decode-path exception to that split.** A configured
 receiver-side limit (§6.2.1) terminates a decode, but the input is *well-formed*, so the
