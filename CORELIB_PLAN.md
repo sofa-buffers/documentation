@@ -356,7 +356,12 @@ sequence end:    [ 0x07 ]      // (id = 0) << 3 | 0b111  ==  0x07, a single byte
   is legal and well-formed; a decoder must accept it. It is the composite-type
   counterpart of a zero-count array (§4.7); what an empty sequence *means*
   (explicit empty collection, all-default struct, …) is a message-layer concern
-  (MESSAGE_SPEC §2, §4).
+  (MESSAGE_SPEC §2, §4). The wire form is unconditional here — it is the message
+  layer that decides *when* one is produced, and it produces far fewer of them than
+  it used to: an all-default `struct`/`union` field is omitted outright, and the
+  empty frame survives only where it carries information (an explicitly empty array,
+  and an all-default element of a wrapper array). §6 states the encoder API that
+  makes that decision expressible without buffering the message.
 * That single primitive (a fresh scope) is enough to model nested structures,
   dynamically sized arrays, arrays of variable-length elements (strings/blobs),
   and tagged unions. These are all schema-level uses the corelib needn't
@@ -572,7 +577,9 @@ should be adapted to the language's conventions; semantics are fixed.
   otherwise use `write_<type>(id, value)` variants.
 * Array write covering unsigned-integer arrays, signed-integer arrays, and
   fixlen (fp32/fp64) arrays. Same overloading rule applies.
-* `sequence_begin(id)` and `sequence_end()` to open and close nested scopes.
+* **Sequence framing.** Opening and closing nested scopes, in a form that lets the
+  message layer omit an all-default sequence **without buffering the message** —
+  see the contract below.
 * `flush()` and the ability to swap in a new output buffer mid-stream.
 
 **Decoder**
@@ -586,6 +593,60 @@ should be adapted to the language's conventions; semantics are fixed.
   `read_<type>(destination)` variants.
 * Descend into nested sequences with a child handler (e.g. `read_sequence`); auto-skip
   of unread fields and whole sub-sequences.
+
+#### Sequence framing: `begin_lazy` / `end` / `end_keep` (normative outcome)
+
+MESSAGE_SPEC §2 omits a sequence-typed **field** whose value equals its declared
+default, and keeps the frame of a wrapper-array **element** that is all-default.
+Both are decided by *what the children turn out to be*, while the sequence header
+has to be on the wire **before** them — so a naive encoder would have to buffer the
+sub-message to find out. It does not have to. The obligation on a corelib is the
+**outcome**, and the shape below is the one that meets it in a single forward pass:
+
+* **`sequence_begin_lazy(id)`** — opens a scope and **holds the header back**. The
+  ids of the innermost open sequences form a pending run.
+* **any field write** — first emits the whole pending run, outermost header first,
+  then the field. Writing content is what proves every enclosing sequence non-default.
+* **`sequence_end()`** — if this sequence's header is still held back it received no
+  content: **drop it**, header and end marker both. Otherwise emit `0x07`.
+* **`sequence_end_keep()`** — behaves like a write: emit the pending run *and* the
+  end marker, so a sequence that got no content still reaches the wire as
+  `begin` + `end`.
+
+The choice between the two closers is **static** — a property of the position in the
+schema, not of the value, so generated code decides it at generation time:
+
+| position | closer |
+|---|---|
+| `struct` / `union` field | `end` |
+| array field (the wrapper) | `end` |
+| wrapper-array **element** (`struct`/`union`/nested row) | `end_keep` |
+| array field already known to differ from a **non-empty** declared `default` | `end_keep` |
+
+The two failure directions are not symmetric, which makes `end_keep` the safe
+default: using it where `end` would do costs one non-canonical empty frame that a
+decoder normalizes away (MESSAGE_SPEC §2), while the reverse drops an element and
+silently changes an array's **length** (§5.1).
+
+Holding a header back never changes the bytes: the pending ids are encoder state,
+not buffer content, so a flush cannot split a pending run and an output buffer
+smaller than the message produces exactly the one-shot bytes (§5.1, §7.2).
+
+**This is a recommended shape, not a mandated API.** What every implementation
+**MUST** produce is the canonical encoding of MESSAGE_SPEC §2. An implementation
+whose message layer is a **descriptor/object table** — it can test each field
+against its default *before* opening anything, as the C reference does in
+`sofab_object_encode` — meets the obligation with the plain eager
+`sequence_begin` / `sequence_end` pair and needs none of the above. The hold-back
+trio exists for the other case: when the message layer is **generated code**, the
+predicate is spread across dozens of individual write calls and the output stream is
+the only place that sees them all.
+
+A profile that exposes the trio only for its generated-code consumers **MAY** make
+it a build option (the C reference gates it behind `SOFAB_DISABLE_LAZY_SEQ_SUPPORT`,
+which removes the pending array from the stream context). Note that such a switch
+changes the context layout and must therefore be configured identically for the
+library and everything that includes it.
 
 ### 6.1 Two Audiences: Direct corelib Use vs. Generated Objects
 
@@ -1332,6 +1393,12 @@ A new `corelib-<lang>` is conformant when:
       subtypes in fixlen arrays (§4.7–4.8).
 - [ ] Sequence start/end framing, fresh ID scope, single-byte `0x07` end, skip-by-walking
       with depth tracking, and rejection of nesting beyond `MAX_DEPTH` = 255 (§4.9).
+- [ ] The encoder can produce the canonical sequence encoding of MESSAGE_SPEC §2 in a
+      **single forward pass** — an all-default `struct`/`union` field omitted, an
+      all-default wrapper-array element still framed — either through a
+      descriptor/object layer that decides per field before opening, or through the
+      `begin_lazy` / `end` / `end_keep` framing API (§6). Held-back headers never make
+      the bytes depend on the output-buffer size.
 - [ ] **Streaming encode** into a smaller-than-message buffer via flush callback /
       sink, with mid-stream buffer swap (§5.1).
 - [ ] **Streaming decode** via `feed` of arbitrarily small chunks, push-callback /
