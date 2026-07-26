@@ -77,26 +77,29 @@ A **message-layer** rule; the wire spec is deliberately unaware of it (CORELIB_P
   (The same principle reaches the byte level: every varint is emitted in its
   minimal form, and a decoder accepts-and-normalizes a non-minimal one —
   CORELIB_PLAN §4.1.)
-- **The ≠-default test is per field — a `sequence` follows it through a derived
-  predicate.** A `sequence` (a `struct` or `union`, and the wrapper form of a
+- **The ≠-default test is per field — and a `sequence`-typed field is no
+  exception.** A `sequence` (a `struct` or `union`, and the wrapper form of a
   composite/dynamic-element array — §5, §6) opens an id scope and *nothing more*
-  (CORELIB_PLAN §3), so it carries no value of its own to compare. The test is
-  therefore **derived from its children**:
-  - a sequence is **emitted empty** when every one of its child fields is omitted
-    by the per-field rule above — applied **recursively**, so an all-default
-    subtree reduces to nothing at every level;
-  - a sequence-typed **field MUST be omitted** iff it would be emitted empty
-    **and** its **absence reconstructs the same value** as the empty frame. For a
-    `struct` or `union` the second condition **always holds**: a decoder
-    initialises every field to its default, and an empty union means "no option
-    active" → `default_id` (§4.2) — which is exactly what absence yields. For the
-    wrapper form of an array it holds **iff the field's declared `default` is the
-    empty collection** (the default when none is declared);
-  - otherwise the sequence is **framed** with `sequence_begin`/`sequence_end`. In
-    particular an array whose declared `default` is **non-empty** is emitted as an
-    **empty wrapper** when its value is the empty collection: there *absent* means
-    that non-empty default, so the empty frame is the only encoding of "explicitly
-    empty" (*Empty ≠ absent* below, §3).
+  (CORELIB_PLAN §3), so its value is compared **per child field, recursively** —
+  never as a raw byte image:
+  - a sequence-typed **field MUST be omitted iff its value equals the field's
+    declared `default`**: for a `struct`, the value whose every child equals its
+    own declared default; for a `union`, `default_id` carrying that option's
+    default (§4.2); for an array, the declared `default` (padded per §3 for a
+    fixed count; the empty collection when none is declared), compared
+    element-wise. Absence reconstructs exactly this default (init rule above),
+    so the omission is value-preserving by construction — and it is the same
+    test §3 already applies to a compact scalar array, so the two array forms
+    now agree.
+  - a sequence whose value **differs** from that default is **framed** with
+    `sequence_begin`/`sequence_end`, its children again subject to the
+    per-field rule. The frame may then be **empty**: an array whose value is
+    the empty collection while its declared `default` is non-empty is the
+    **empty wrapper** — the only encoding of "explicitly empty" (*Empty ≠
+    absent* below, §3). (A union whose active option is not `default_id` but
+    equals that option's own default likewise reduces to an empty frame, which
+    decodes to `default_id` — the pre-existing §4.2 identity loss; this rule
+    leaves that behaviour unchanged.)
 
   A decoder **MUST accept** a sequence that is present but empty where the rule
   above omits it. That is a **non-canonical encoding of the same value**, and a
@@ -276,8 +279,9 @@ A sequence carrying **at most one** child: the present field, whose `id` selects
 the active `oneof` option. `default_id` applies when none is set. Indistinguishable
 on the wire from a one-field struct; the schema disambiguates. An empty union
 sequence means "no option active" → `default_id` — the same value its *absence*
-yields, so a default union is canonically **omitted** and the empty frame is the
-accepted non-canonical form (§2).
+yields, so a default union is canonically **omitted** (§2). An empty frame is
+decoded identically; it is what a union reduces to when its active option is
+not `default_id` but equals that option's own default (§2).
 
 A union **option may be any field type** — a scalar, an array, a struct, even
 another union — so a union models a tagged sum type with an arbitrary payload.
