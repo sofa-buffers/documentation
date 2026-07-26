@@ -171,9 +171,10 @@ A **message-layer** rule; the wire spec is deliberately unaware of it (CORELIB_P
   wrapper array a default-valued `string`/`blob` element is **indistinguishable
   from an absent one** (both reconstruct to the element default). Trailing default
   elements therefore collapse — `["a", ""]` encodes exactly like `["a"]`, and an
-  all-default array such as `["", ""]` encodes exactly like the empty wrapper `[]`.
-  This is intentional and round-trips losslessly against a default-initialised
-  destination (§5.1).
+  all-default array such as `["", ""]` encodes exactly like the empty array `[]`
+  (whose canonical form, for a field with an empty declared `default`, is in turn
+  the *omitted* field — the ≠-default bullet above). This is intentional and
+  round-trips losslessly against a default-initialised destination (§5.1).
 
 ---
 
@@ -274,7 +275,9 @@ somestruct = seq[20](                  # wrapper id 20 = the struct field's id
 A sequence carrying **at most one** child: the present field, whose `id` selects
 the active `oneof` option. `default_id` applies when none is set. Indistinguishable
 on the wire from a one-field struct; the schema disambiguates. An empty union
-sequence means "no option active" → `default_id`.
+sequence means "no option active" → `default_id` — the same value its *absence*
+yields, so a default union is canonically **omitted** and the empty frame is the
+accepted non-canonical form (§2).
 
 A union **option may be any field type** — a scalar, an array, a struct, even
 another union — so a union models a tagged sum type with an arbitrary payload.
@@ -332,7 +335,9 @@ Consequences:
   `count`.
 
 The wrapper sequence carries the array field's own `id` in its parent scope; an
-empty wrapper (a sequence with no children) is the explicit empty array.
+empty wrapper (a sequence with no children) is the explicit empty array — emitted
+only when the field's declared `default` is non-empty; with an empty default the
+canonical form of the empty array is the omitted field (§2).
 
 (Array-of-composite also requires no new decoder machinery in a corelib — an
 implementation note in CORELIB_PLAN §4.9. The only bound relevant at this layer is
