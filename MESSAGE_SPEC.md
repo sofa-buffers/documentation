@@ -93,20 +93,41 @@ A **message-layer** rule; the wire spec is deliberately unaware of it (CORELIB_P
     now agree.
   - a sequence whose value **differs** from that default is **framed** with
     `sequence_begin`/`sequence_end`, its children again subject to the
-    per-field rule. The frame may then be **empty**: an array whose value is
-    the empty collection while its declared `default` is non-empty is the
-    **empty wrapper** — the only encoding of "explicitly empty" (*Empty ≠
-    absent* below, §3). (A union whose active option is not `default_id` but
-    equals that option's own default likewise reduces to an empty frame, which
-    decodes to `default_id` — the pre-existing §4.2 identity loss; this rule
-    leaves that behaviour unchanged.)
+    per-field rule. The frame may then be **empty** — the one case a conformant
+    encoder still emits one, spelled out below. (A union whose active option is
+    not `default_id` but equals that option's own default likewise reduces to an
+    empty frame, which decodes to `default_id` — the pre-existing §4.2 identity
+    loss; this rule leaves that behaviour unchanged.)
 
-  A decoder **MUST accept** a sequence that is present but empty where the rule
-  above omits it. That is a **non-canonical encoding of the same value**, and a
-  re-encode normalizes it away — exactly as a non-minimal varint (CORELIB_PLAN
-  §4.1) and a trailing default array run (§3) are normalized. Both forms decode
-  identically, so an encoder that always framed stays interoperable in both
-  directions.
+  **What an empty frame denotes (normative).** A decoder **MUST** accept a
+  sequence that is present but carries no child. It always means *everything
+  inside it is at its default*; what that value **is** follows from the position
+  the sequence occupies, and the three positions do not agree:
+
+  - an **array wrapper** → the **empty array**, length `0`. This is the faithful
+    counterpart of JSON `[]` (*Empty ≠ absent* below) and the **only** empty frame
+    a conformant encoder emits — and only where it is needed: when the field's
+    declared `default` is non-empty, so that absence would reconstruct that
+    default instead of the empty collection. Where the declared `default` is
+    itself empty, absence denotes the same value and is the canonical form.
+    (A **fixed-count** array has no empty value: there "length 0" is the
+    `N`-element all-default value — §3.)
+  - a **`struct`/`union` field** → exactly what its **absence** yields: every
+    child at its declared default, a union at `default_id`. The two forms denote
+    the same value, so the empty frame is a **non-canonical encoding of the
+    omitted field** and a decoder treats it as omitted; a re-encode normalizes it
+    away, exactly as a non-minimal varint (CORELIB_PLAN §4.1) and a trailing
+    default array run (§3) are normalized. A conformant encoder never emits it.
+  - an **array element that is itself a sequence** → an **all-default element**,
+    which is *still present*. Its id counts toward the array's length (*highest
+    present id + 1*, §5.1), so a decoder **MUST NOT** treat it as absent: doing so
+    would change the decoded length, not merely the bytes. This is precisely why
+    an all-default **element** keeps its frame while an all-default **field** does
+    not.
+
+  An encoder that framed every sequence (the pre-uniform behaviour) therefore
+  stays readable in both directions: every frame it emits that this rule would
+  have omitted decodes to the same value.
 
   **Consequence — an all-default message encodes to zero bytes.** With every
   sequence omitted, a message whose every field equals its default is the **empty
@@ -168,7 +189,11 @@ A **message-layer** rule; the wire spec is deliberately unaware of it (CORELIB_P
     above). The distinction is observable only for a field whose declared
     `default` is non-empty.
 
-  This is what enables a faithful JSON `[]` ↔ SofaBuffers round-trip.
+  This is what enables a faithful JSON `[]` ↔ SofaBuffers round-trip, and it is
+  the **only** place where an empty frame and an absent field differ. For a
+  sequence that is not an array — a `struct` or `union` field — the two denote the
+  same value, which is why that empty frame is never emitted and is decoded as if
+  the field were omitted (≠-default bullet above).
 
   At the **element** level the sparse rule above gives the opposite: inside a
   wrapper array a default-valued `string`/`blob` element is **indistinguishable
