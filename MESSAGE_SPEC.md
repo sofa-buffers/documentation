@@ -93,11 +93,19 @@ A **message-layer** rule; the wire spec is deliberately unaware of it (CORELIB_P
     now agree.
   - a sequence whose value **differs** from that default is **framed** with
     `sequence_begin`/`sequence_end`, its children again subject to the
-    per-field rule. The frame may then be **empty** — the one case a conformant
-    encoder still emits one, spelled out below. (A union whose active option is
-    not `default_id` but equals that option's own default likewise reduces to an
-    empty frame, which decodes to `default_id` — the pre-existing §4.2 identity
-    loss; this rule leaves that behaviour unchanged.)
+    per-field rule. For a `struct` that frame is never empty: a value differing
+    from the field's default differs in at least one child, and the per-field
+    rule writes that child.
+  - a `union` has the one **degenerate case**, and it is resolved by omission.
+    When the active option is not `default_id` but equals **that option's own
+    default**, the per-field rule writes no child, so framing would yield an
+    empty frame. Such a union **MUST be omitted**, exactly like a default one.
+    Nothing is lost: an empty union frame decodes to `default_id` (§4.2) —
+    precisely what absence reconstructs — so the two are the same value, and the
+    identity of the active option is gone either way (the pre-existing §4.2
+    identity loss, unchanged here). A conformant encoder therefore **never emits
+    an empty `struct`/`union` frame**; every empty frame on the wire is an
+    *array* position.
 
   **What an empty frame denotes (normative).** A decoder **MUST** accept a
   sequence that is present but carries no child. It always means *everything
@@ -105,11 +113,13 @@ A **message-layer** rule; the wire spec is deliberately unaware of it (CORELIB_P
   the sequence occupies, and the three positions do not agree:
 
   - an **array wrapper** → the **empty array**, length `0`. This is the faithful
-    counterpart of JSON `[]` (*Empty ≠ absent* below) and the **only** empty frame
-    a conformant encoder emits — and only where it is needed: when the field's
-    declared `default` is non-empty, so that absence would reconstruct that
-    default instead of the empty collection. Where the declared `default` is
-    itself empty, absence denotes the same value and is the canonical form.
+    counterpart of JSON `[]` (*Empty ≠ absent* below) and one of the **two**
+    positions where a conformant encoder emits an empty frame at all — the other
+    is the array element below, so both are array positions. Here it is emitted
+    only where it is needed: when the field's declared `default` is non-empty, so
+    that absence would reconstruct that default instead of the empty collection.
+    Where the declared `default` is itself empty, absence denotes the same value
+    and is the canonical form.
     (A **fixed-count** array has no empty value: there "length 0" is the
     `N`-element all-default value — §3.)
   - a **`struct`/`union` field** → exactly what its **absence** yields: every
@@ -117,7 +127,9 @@ A **message-layer** rule; the wire spec is deliberately unaware of it (CORELIB_P
     the same value, so the empty frame is a **non-canonical encoding of the
     omitted field** and a decoder treats it as omitted; a re-encode normalizes it
     away, exactly as a non-minimal varint (CORELIB_PLAN §4.1) and a trailing
-    default array run (§3) are normalized. A conformant encoder never emits it.
+    default array run (§3) are normalized. A conformant encoder never emits it —
+    the one union value that would otherwise produce one is omitted instead
+    (≠-default bullet above).
   - an **array element that is itself a sequence** → an **all-default element**,
     which is *still present*. Its id counts toward the array's length (*highest
     present id + 1*, §5.1), so a decoder **MUST NOT** treat it as absent: doing so
@@ -304,9 +316,12 @@ A sequence carrying **at most one** child: the present field, whose `id` selects
 the active `oneof` option. `default_id` applies when none is set. Indistinguishable
 on the wire from a one-field struct; the schema disambiguates. An empty union
 sequence means "no option active" → `default_id` — the same value its *absence*
-yields, so a default union is canonically **omitted** (§2). An empty frame is
-decoded identically; it is what a union reduces to when its active option is
-not `default_id` but equals that option's own default (§2).
+yields, so a default union is canonically **omitted** (§2). A conformant encoder
+never emits an empty union frame: the one value that would otherwise produce
+one — an active option that is not `default_id` but equals that option's own
+default — is **omitted** instead, denoting the same `default_id` value (§2). A
+decoder still accepts an empty frame and decodes it identically, as the omitted
+field.
 
 A union **option may be any field type** — a scalar, an array, a struct, even
 another union — so a union models a tagged sum type with an arbitrary payload.
