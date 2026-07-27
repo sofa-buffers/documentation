@@ -648,6 +648,19 @@ which removes the pending array from the stream context). Note that such a switc
 changes the context layout and must therefore be configured identically for the
 library and everything that includes it.
 
+**How deep the hold-back reaches (normative).** The pending run grows with nesting,
+so an implementation that can allocate **MUST** hold back to the full `MAX_DEPTH`
+(§6.2) and is thereby canonical at every depth. A **heap-free profile** cannot: it
+**MAY** bound the run to a fixed depth, and beyond that bound it frames eagerly —
+emitting the empty frame that §2 would have omitted. That output is **well-formed
+and decodes to the same value** (it is the non-canonical form §2 already requires
+every decoder to accept and normalize), so the two profiles interoperate; what it
+is not is canonical. This is the same constrained-profile allowance `FIXLEN_MAX`
+and `ARRAY_MAX` already carry (§6.2), and it exists for the same reason: a bound
+that costs RAM per stream is a real cost on a target that has none to spare. A
+profile that takes it **MUST** document the bound, because two encoders that
+disagree about it disagree about bytes — not about validity.
+
 ### 6.1 Two Audiences: Direct corelib Use vs. Generated Objects
 
 A corelib has **two** kinds of users, and the API must serve both:
