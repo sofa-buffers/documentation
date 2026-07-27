@@ -337,6 +337,37 @@ Length range `0 .. 2,147,483,647`. Fixlen subtypes:
   or variable blobs, use a sequence (see §4.9).
 * `fp32`/`fp64` elements are little-endian.
 
+**Decode order: both words first, then the subtype, then the schema bound (normative).**
+The `element_count` precedes the `fixlen_word`, so a decoder learns *how many* elements
+there are before it learns *of what type* — and the two answers belong to different
+authorities (the format bounds the count, the schema bounds the array). A decoder
+therefore:
+
+1. reads `element_count`, enforcing the **format** ceiling `ARRAY_MAX` (§6.2) as it does
+   so, and allocating nothing on the strength of that count;
+2. reads the `fixlen_word`, obtaining the subtype and the per-element length;
+3. if the subtype **contradicts** the declared element type, **skips** the field per
+   MESSAGE_SPEC §7.3 — `element_count × element_length` payload bytes — leaving the
+   declared field at its default. The schema `count` **MUST NOT** be applied: the field
+   was never this array's value, so its element count is not this array's count;
+4. otherwise applies the **schema** `count` bound (MESSAGE_SPEC §7.1): an
+   `element_count` above the declared `count` is `INVALID`.
+
+This order is not a preference. A fixlen array cannot be skipped at all without the
+`fixlen_word`, because the payload length is `element_count × element_length` — so a
+conformant decoder has already read both words before it can act on the field either
+way, and deciding on the subtype first costs it nothing.
+
+Two consequences follow and are **intended**:
+
+* A message that ends **between** the two words is `INCOMPLETE`, not `INVALID`, even
+  when the `element_count` already exceeds the schema `count`. The decoder genuinely
+  cannot yet know whether the field is one it must bound (§5.2's precedence gives
+  `INVALID` only to bytes that are malformed *regardless of what follows*; these are
+  not).
+* The format ceiling still fires on the count word whatever the subtype turns out to
+  be, so an absurd `element_count` is rejected before any allocation.
+
 ### 4.9 Sequence Start (type `0b110`) and Sequence End (type `0b111`)
 
 ```

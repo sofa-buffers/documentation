@@ -615,6 +615,15 @@ The check reaches exactly as far as the wire format distinguishes, and no furthe
 type, so a header carrying that type is well-formed for every one of them. Value-range
 conformance is not a wire-type question and is outside this clause.
 
+**Against a schema bound, this clause wins.** For a **fixlen array** the element count
+sits on the wire *before* the element subtype (CORELIB_PLAN §4.8), so a decoder that
+enforced its schema `count` (§7.1) as it read the count word would reject a field this
+clause says to skip — making the verdict depend on the count of a field that is not the
+declared field's value. The subtype is therefore decided first and the schema bound
+applied only to a field that survives it; CORELIB_PLAN §4.8 states the decode order, the
+format ceilings that still apply meanwhile, and the resulting `INCOMPLETE`-not-`INVALID`
+outcome for a message truncated between the two words.
+
 *(Rationale: a decoder must already have a path for a field it cannot use — the unknown-id
 skip. A field whose wire type contradicts the schema is the same situation, so it takes the
 same path; reporting `INVALID` instead would create a second, divergent handling of "a
