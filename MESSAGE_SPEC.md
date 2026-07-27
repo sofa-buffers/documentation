@@ -162,11 +162,13 @@ A **message-layer** rule; the wire spec is deliberately unaware of it (CORELIB_P
   fields (`id = index`, §5.1), so the per-field rule above applies to them with no
   new machinery:
   - a **`string`/`blob` element is a leaf field**, so it **MUST be omitted iff it
-    equals its element default**. The encoder drops it; the decoder restores the
-    missing `dest[id]` from the element default. This is the only place an array
-    element leaves an id **gap** on the wire. (A decoder still accepts a present,
-    default-valued element for robustness, but a conformant encoder never emits
-    one — so the encoding stays canonical.)
+    equals its element default** — with one exception, the **last element of a
+    dynamic array**, which is always written (rule below). The encoder drops it;
+    the decoder restores the missing `dest[id]` from the element default. This is
+    the only place an array element leaves an id **gap** on the wire. (A decoder
+    still accepts a present, default-valued element at an interior position for
+    robustness, but a conformant encoder never emits one — so the encoding stays
+    canonical.)
   - a **`struct`/`union`/nested-array element is itself a sequence** and, inside a
     wrapper, stays **always framed, never omitted**, even when all its fields equal
     their defaults; its interior follows the per-field rule recursively. The
@@ -177,6 +179,20 @@ A **message-layer** rule; the wire spec is deliberately unaware of it (CORELIB_P
     in a **fixed-count** array the *trailing* run of default elements is elided
     even for sequence-form elements — there the length is `N` regardless — §3,
     §5.1.)
+
+  **The last element of a dynamic array is always present (normative).** In a
+  wrapper array without a schema `count` the decoded length is *highest present
+  id + 1* (§5.1), so the element at the highest index is the only one whose
+  presence the length depends on. An encoder **MUST** write it even when it
+  equals its element default — a `string`/`blob` element the rule above would
+  otherwise drop, exactly as a sequence element at that position is framed rather
+  than dropped. The two element kinds are therefore held to **one** standard:
+  nothing that carries the length may be elided. `["a", ""]` and `["a"]` are
+  different values and encode differently; an all-default `["", ""]` is written
+  as its final element alone, at id `1`, and is **not** the empty array. Only the
+  **interior** may hold gaps. (A **fixed-count** array needs none of this — its
+  length is `N` whatever the wire carries, which is why it elides the entire
+  trailing default run instead, sequence elements included — §3, §5.1.)
 
   A wrapper array is therefore, on the wire, **indistinguishable from a struct
   whose default-valued fields are omitted** — it is the same rule, not an analogy.
@@ -207,14 +223,13 @@ A **message-layer** rule; the wire spec is deliberately unaware of it (CORELIB_P
   same value, which is why that empty frame is never emitted and is decoded as if
   the field were omitted (≠-default bullet above).
 
-  At the **element** level the sparse rule above gives the opposite: inside a
-  wrapper array a default-valued `string`/`blob` element is **indistinguishable
-  from an absent one** (both reconstruct to the element default). Trailing default
-  elements therefore collapse — `["a", ""]` encodes exactly like `["a"]`, and an
-  all-default array such as `["", ""]` encodes exactly like the empty array `[]`
-  (whose canonical form, for a field with an empty declared `default`, is in turn
-  the *omitted* field — the ≠-default bullet above). This is intentional and
-  round-trips losslessly against a default-initialised destination (§5.1).
+  At the **element** level the sparse rule above gives the opposite — but only in
+  the array's **interior**: a default-valued `string`/`blob` element there is
+  **indistinguishable from an absent one** (both reconstruct to the element
+  default), so omitting element 1 of `["a", "", "c"]` denotes the same value. The
+  **final** element is exempt: it is always written (rule above), so a dynamic
+  array's length round-trips exactly and `["a", ""]`, `["a"]` and `[]` are three
+  distinct encodings of three distinct values.
 
 ---
 
@@ -388,9 +403,11 @@ implementation note in CORELIB_PLAN §4.9. The only bound relevant at this layer
 that skipping/nesting stays within `MAX_DEPTH = 255`.)
 
 **Sparse elements & default reconstruction (normative).** A `string`/`blob`
-element equal to its element default is **not** written (§2); its id is simply
-absent from the wrapper (`struct`/`union`/nested-array elements are sequences and
-are always present, so they never create a gap). Before applying a wrapper array a
+element equal to its element default is **not** written (§2) unless it is the
+**last element of a dynamic array**, which is always present so that the length
+below is recoverable; otherwise its id is simply absent from the wrapper
+(`struct`/`union`/nested-array elements are sequences and are always present, so
+they never create a gap). Before applying a wrapper array a
 decoder **MUST** initialise every destination slot to its element default — a
 target pre-sized to the schema `count`/`maxlen` on heap-less profiles, or a fresh
 buffer sized to the transmission — then write each present element at `dest[id]`,
@@ -398,11 +415,13 @@ leaving absent ids at their default. **Array length** is recovered as follows:
 for a **fixed-count** array (`count: N`) it is **`N` for every target** — a
 growable-list target MUST default-fill to `N` exactly like a pre-sized one
 (§3, fixed-count rule), and an element id `≥ N` is `INVALID` (§7); for a
-**dynamic** array (no `count`) it is *highest present id + 1*. Trailing default
-*leaf* elements are therefore indistinguishable from a shorter wire form
-(§2) — by design, and lossless against a default-initialised destination. A decoder
-**MUST** accept these gaps; when the element type has no default, supplying a
-cleanly initialised destination is the application's responsibility.
+**dynamic** array (no `count`) it is *highest present id + 1* — exact, because the
+highest index is never elided. An **interior** default *leaf* element is
+indistinguishable from an absent one (§2) — by design, and lossless against a
+default-initialised destination — but it can never be the one that fixes the
+length. A decoder **MUST** accept these gaps; when the element type has no
+default, supplying a cleanly initialised destination is the application's
+responsibility.
 
 **Fixed-count wrapper arrays elide the trailing default run — sequence-form
 elements included (normative).** The canonical-encoding rule of §3 applies to a
@@ -418,9 +437,11 @@ the `N`-fill above, not as a gap. When the elision leaves **no element at all**
 (`M = 0`, an all-default array), the wrapper sequence itself is **omitted** by
 the ≠-default rule of §2 — unless the field's declared `default` is non-empty,
 where the empty wrapper is retained as the explicit-empty form. For a
-**dynamic** array trailing sequence elements are **not** elided: with no `N` to
-fill to, the trailing empty frame is exactly what distinguishes `[s, default]`
-from `[s]` on a growable target.
+**dynamic** array **nothing trailing is elided, of either element kind**: with no
+`N` to fill to, the element at the highest index is what distinguishes
+`[s, default]` from `[s]` on a growable target, so it is always written — the
+trailing empty frame for a sequence element, the default value itself for a
+`string`/`blob` element (§2).
 
 ### 5.2 The cases
 
@@ -462,7 +483,9 @@ element 1 equals the default and is therefore omitted:
 ```
 
 → `2E 02 0A 41 12 0A 43 07` (8 bytes). The decoder restores `dest[1] = ""` from the
-element default; the recovered array is `["A", "", "C"]`.
+element default; the recovered array is `["A", "", "C"]`. Only element 1 qualifies:
+element 2 is the array's **last**, so it would be written even if it also equalled
+`""` — that is what fixes the recovered length at 3 (§2, last-element rule).
 
 Written densely instead (the pre-clarification behaviour), element 1's header plus
 its empty `fixlen_word` — the two bytes **`0A 02`** — would sit between `41` and
