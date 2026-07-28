@@ -167,7 +167,7 @@ A decoder **MUST accept** a non-minimal varint that stays within the 64-bit
 bound below, decode it to the value it denotes, and — because every re-encode is
 canonical — emit the minimal form on any re-encode. A non-minimal encoding is
 therefore **not** the `INVALID` outcome (§5.2); it is normalized away, exactly
-as a non-canonical trailing-default array run is (MESSAGE_SPEC §3). The rule
+as a present-but-default *interior* array element is (MESSAGE_SPEC §2). The rule
 applies wherever a varint appears: field headers, `fixlen_word`s, array element
 counts, element values, and inside skipped fields.
 
@@ -337,6 +337,37 @@ Length range `0 .. 2,147,483,647`. Fixlen subtypes:
   or variable blobs, use a sequence (see §4.9).
 * `fp32`/`fp64` elements are little-endian.
 
+**Decode order: both words first, then the subtype, then the schema bound (normative).**
+The `element_count` precedes the `fixlen_word`, so a decoder learns *how many* elements
+there are before it learns *of what type* — and the two answers belong to different
+authorities (the format bounds the count, the schema bounds the array). A decoder
+therefore:
+
+1. reads `element_count`, enforcing the **format** ceiling `ARRAY_MAX` (§6.2) as it does
+   so, and allocating nothing on the strength of that count;
+2. reads the `fixlen_word`, obtaining the subtype and the per-element length;
+3. if the subtype **contradicts** the declared element type, **skips** the field per
+   MESSAGE_SPEC §7.3 — `element_count × element_length` payload bytes — leaving the
+   declared field at its default. The schema `count` **MUST NOT** be applied: the field
+   was never this array's value, so its element count is not this array's count;
+4. otherwise applies the **schema** `count` bound (MESSAGE_SPEC §7.1): an
+   `element_count` above the declared `count` is `INVALID`.
+
+This order is not a preference. A fixlen array cannot be skipped at all without the
+`fixlen_word`, because the payload length is `element_count × element_length` — so a
+conformant decoder has already read both words before it can act on the field either
+way, and deciding on the subtype first costs it nothing.
+
+Two consequences follow and are **intended**:
+
+* A message that ends **between** the two words is `INCOMPLETE`, not `INVALID`, even
+  when the `element_count` already exceeds the schema `count`. The decoder genuinely
+  cannot yet know whether the field is one it must bound (§5.2's precedence gives
+  `INVALID` only to bytes that are malformed *regardless of what follows*; these are
+  not).
+* The format ceiling still fires on the count word whatever the subtype turns out to
+  be, so an absurd `element_count` is rejected before any allocation.
+
 ### 4.9 Sequence Start (type `0b110`) and Sequence End (type `0b111`)
 
 ```
@@ -356,7 +387,12 @@ sequence end:    [ 0x07 ]      // (id = 0) << 3 | 0b111  ==  0x07, a single byte
   is legal and well-formed; a decoder must accept it. It is the composite-type
   counterpart of a zero-count array (§4.7); what an empty sequence *means*
   (explicit empty collection, all-default struct, …) is a message-layer concern
-  (MESSAGE_SPEC §2, §4).
+  (MESSAGE_SPEC §2, §4). The wire form is unconditional here — it is the message
+  layer that decides *when* one is produced, and it produces far fewer of them than
+  it used to: an all-default `struct`/`union` field is omitted outright, and the
+  empty frame survives only where it carries information (an explicitly empty array,
+  and an all-default element of a wrapper array). §6 states the encoder API that
+  makes that decision expressible without buffering the message.
 * That single primitive (a fresh scope) is enough to model nested structures,
   dynamically sized arrays, arrays of variable-length elements (strings/blobs),
   and tagged unions. These are all schema-level uses the corelib needn't
@@ -572,7 +608,9 @@ should be adapted to the language's conventions; semantics are fixed.
   otherwise use `write_<type>(id, value)` variants.
 * Array write covering unsigned-integer arrays, signed-integer arrays, and
   fixlen (fp32/fp64) arrays. Same overloading rule applies.
-* `sequence_begin(id)` and `sequence_end()` to open and close nested scopes.
+* **Sequence framing.** Opening and closing nested scopes, in a form that lets the
+  message layer omit an all-default sequence **without buffering the message** —
+  see the contract below.
 * `flush()` and the ability to swap in a new output buffer mid-stream.
 
 **Decoder**
@@ -586,6 +624,73 @@ should be adapted to the language's conventions; semantics are fixed.
   `read_<type>(destination)` variants.
 * Descend into nested sequences with a child handler (e.g. `read_sequence`); auto-skip
   of unread fields and whole sub-sequences.
+
+#### Sequence framing: `begin_lazy` / `end` / `end_keep` (normative outcome)
+
+MESSAGE_SPEC §2 omits a sequence-typed **field** whose value equals its declared
+default, and keeps the frame of a wrapper-array **element** that is all-default.
+Both are decided by *what the children turn out to be*, while the sequence header
+has to be on the wire **before** them — so a naive encoder would have to buffer the
+sub-message to find out. It does not have to. The obligation on a corelib is the
+**outcome**, and the shape below is the one that meets it in a single forward pass:
+
+* **`sequence_begin_lazy(id)`** — opens a scope and **holds the header back**. The
+  ids of the innermost open sequences form a pending run.
+* **any field write** — first emits the whole pending run, outermost header first,
+  then the field. Writing content is what proves every enclosing sequence non-default.
+* **`sequence_end()`** — if this sequence's header is still held back it received no
+  content: **drop it**, header and end marker both. Otherwise emit `0x07`.
+* **`sequence_end_keep()`** — behaves like a write: emit the pending run *and* the
+  end marker, so a sequence that got no content still reaches the wire as
+  `begin` + `end`.
+
+The choice between the two closers is **static** — a property of the position in the
+schema, not of the value, so generated code decides it at generation time:
+
+| position | closer |
+|---|---|
+| `struct` / `union` field | `end` |
+| array field (the wrapper) | `end` |
+| wrapper-array **element** (`struct`/`union`/nested row) | `end_keep` |
+| array field already known to differ from a **non-empty** declared `default` | `end_keep` |
+
+The two failure directions are not symmetric, which makes `end_keep` the safe
+default: using it where `end` would do costs one non-canonical empty frame that a
+decoder normalizes away (MESSAGE_SPEC §2), while the reverse drops an element and
+silently changes an array's **length** (§5.1).
+
+Holding a header back never changes the bytes: the pending ids are encoder state,
+not buffer content, so a flush cannot split a pending run and an output buffer
+smaller than the message produces exactly the one-shot bytes (§5.1, §7.2).
+
+**This is a recommended shape, not a mandated API.** What every implementation
+**MUST** produce is the canonical encoding of MESSAGE_SPEC §2. An implementation
+whose message layer is a **descriptor/object table** — it can test each field
+against its default *before* opening anything, as the C reference does in
+`sofab_object_encode` — meets the obligation with the plain eager
+`sequence_begin` / `sequence_end` pair and needs none of the above. The hold-back
+trio exists for the other case: when the message layer is **generated code**, the
+predicate is spread across dozens of individual write calls and the output stream is
+the only place that sees them all.
+
+A profile that exposes the trio only for its generated-code consumers **MAY** make
+it a build option (the C reference gates it behind `SOFAB_DISABLE_LAZY_SEQ_SUPPORT`,
+which removes the pending array from the stream context). Note that such a switch
+changes the context layout and must therefore be configured identically for the
+library and everything that includes it.
+
+**How deep the hold-back reaches (normative).** The pending run grows with nesting,
+so an implementation that can allocate **MUST** hold back to the full `MAX_DEPTH`
+(§6.2) and is thereby canonical at every depth. A **heap-free profile** cannot: it
+**MAY** bound the run to a fixed depth, and beyond that bound it frames eagerly —
+emitting the empty frame that §2 would have omitted. That output is **well-formed
+and decodes to the same value** (it is the non-canonical form §2 already requires
+every decoder to accept and normalize), so the two profiles interoperate; what it
+is not is canonical. This is the same constrained-profile allowance `FIXLEN_MAX`
+and `ARRAY_MAX` already carry (§6.2), and it exists for the same reason: a bound
+that costs RAM per stream is a real cost on a target that has none to spare. A
+profile that takes it **MUST** document the bound, because two encoders that
+disagree about it disagree about bytes — not about validity.
 
 ### 6.1 Two Audiences: Direct corelib Use vs. Generated Objects
 
@@ -608,24 +713,24 @@ A corelib has **two** kinds of users, and the API must serve both:
 > chunks**.
 
 **Generated-object API must be dead simple.** A human using a generated `Person`
-object should think in terms of *fields and (de)serialize*, never in terms of varints,
-field IDs, sequence markers, or buffers. Target roughly this ergonomics (names adapted
-per language):
+object should think in terms of *fields, encode and decode*, never in terms of
+varints, field IDs, sequence markers, or buffers. Target roughly this ergonomics
+(names adapted to the language's casing, see §6.1.1):
 
 ```
 person = Person()           # plain typed fields: person.name, person.age, person.tags[]
 person.name = "Ada"
 person.age  = 36
 
-bytes = person.serialize()              # one-shot convenience
-person2 = Person.deserialize(bytes)     # one-shot convenience
+bytes   = person.encode()               # one-shot convenience
+person2 = Person.decode(bytes)          # one-shot convenience
 ```
 
 * Generated fields are ordinary typed members with language-natural accessors;
   IDs/types/order come from the schema and are hidden inside the generated code.
 * Nested schema messages become nested generated objects; repeated fields become the
   language's natural list/array type.
-* Provide one-line `serialize()` / `deserialize()` convenience methods for the
+* Provide one-line `encode()` / `decode()` convenience methods for the
   90% case (message fits comfortably in memory).
 
 **But generated objects must ALSO stream in chunks.** The convenience methods are
@@ -634,7 +739,7 @@ large objects never force a full in-memory buffer:
 
 ```
 # streaming OUT: feed an existing ostream / sink; bytes leave as the buffer fills
-person.serialize_to(ostream)            # writes via the corelib flush callback / sink
+person.serialize(ostream)               # writes via the corelib flush callback / sink
 
 # streaming IN: drive a decoder fed with arbitrarily small chunks
 dec = Person.decoder()                  # a generated reader bound to the corelib istream
@@ -649,13 +754,43 @@ person = dec.value                      # object assembled incrementally, never 
 buildable purely from the streaming primitives. Concretely, the corelib **must**:
 
 * Let the generator drive encoding through the **same flush-callback / sink + buffer
-  swap** mechanism (§5.1), so `serialize_to` works with an output buffer smaller than
+  swap** mechanism (§5.1), so `serialize` works with an output buffer smaller than
   the object.
 * Let the generator drive decoding through the **push-feed + pull-read / visitor**
   mechanism (§5.2), so a generated decoder can consume **arbitrarily small `feed`
   chunks** and bind each decoded field straight into the object's member — including
   descending into nested generated objects via `read_sequence` and resuming a
   half-built object across chunk boundaries.
+#### 6.1.1 Canonical names for the generated-object layer (normative)
+
+Generated types land in the **user's** namespace, and every extra spelling a port
+invents — `serialize_to`, `to_bytes`, `from_bytes`, `decode_from`, `decode_into`,
+`marshal`, `unmarshal` — is one more name a developer has to learn per language for
+an operation that is identical everywhere. The set is therefore closed. Adapt only
+the **casing/idiom** (`try_decode` / `tryDecode` / `TryDecode`), never the words.
+
+Two pairs, split by who the caller is:
+
+| name | kind | purpose |
+|---|---|---|
+| `encode()` | instance | one-shot: produce the complete message as bytes |
+| `decode(bytes)` | static / free | one-shot: build the object from a complete message; fails only in the language's own way (exception / panic-free variant below) |
+| `try_decode(bytes)` | static / free | the fallible form of `decode` for languages that return results rather than throw; returns the object or the §6.3 error |
+| `serialize(ostream)` | instance | streaming out: write the object's fields into a corelib output stream (§5.1) |
+| `deserialize(istream, …)` | instance | streaming in: the per-field hook the corelib's decoder calls (visitor/callback, §5.2) |
+| `decoder()` | static / free | streaming in: obtain the generated reader that `feed`s arbitrarily small chunks |
+
+`encode` / `decode` are the **convenience** layer users reach for; `serialize` /
+`deserialize` are the **streaming** pair that talks to the corelib, and the
+convenience pair is a thin wrapper over it (§6.1). A port **MUST NOT** add a second
+name for either — no `serialize_to` alongside `serialize`, no `from_bytes` alongside
+`decode`. Language-mandated extras stay allowed where the ecosystem requires them
+(a `Display`/`ToString`, a serde/`IXmlSerializable` bridge, an idiomatic constructor);
+they are not alternative entry points into the wire format.
+
+Anything below this layer — `feed`, `read_*`, `write_*`, `sequence_*` — is corelib
+API (§6) and keeps its own names; it is not part of the generated object's surface.
+
 ### 6.2 Limits & Constants (normative)
 
 | Constant | Value |
@@ -1114,9 +1249,9 @@ Concise, runnable examples — in the language's idiomatic pattern — for each 
   with an output buffer smaller than the whole message.
 * **OStream** — the output-stream / writer-sink wrapper.
 * **IStream** — the input-stream / push-feed wrapper.
-* **Generator** — using generated object code (the one-shot `serialize()` /
-  `deserialize()` helpers *and* the streaming `serialize_to` / decoder path). This
-  is the most common real-world use case, so show it explicitly.
+* **Generator** — using generated object code (the one-shot `encode()` / `decode()`
+  helpers *and* the streaming `serialize` / `decoder()` path, §6.1.1). This is the
+  most common real-world use case, so show it explicitly.
 
 ### 9.6 `## Memory handling`
 
@@ -1339,6 +1474,12 @@ A new `corelib-<lang>` is conformant when:
       subtypes in fixlen arrays (§4.7–4.8).
 - [ ] Sequence start/end framing, fresh ID scope, single-byte `0x07` end, skip-by-walking
       with depth tracking, and rejection of nesting beyond `MAX_DEPTH` = 255 (§4.9).
+- [ ] The encoder can produce the canonical sequence encoding of MESSAGE_SPEC §2 in a
+      **single forward pass** — an all-default `struct`/`union` field omitted, an
+      all-default wrapper-array element still framed — either through a
+      descriptor/object layer that decides per field before opening, or through the
+      `begin_lazy` / `end` / `end_keep` framing API (§6). Held-back headers never make
+      the bytes depend on the output-buffer size.
 - [ ] **Streaming encode** into a smaller-than-message buffer via flush callback /
       sink, with mid-stream buffer swap (§5.1).
 - [ ] **Streaming decode** via `feed` of arbitrarily small chunks, push-callback /
@@ -1357,8 +1498,8 @@ A new `corelib-<lang>` is conformant when:
       outcome, and conformance tests run with the check ON.
 - [ ] The streaming primitives are sufficient to build a thin **generated-object**
       layer with a dead-simple API that *also* serializes/deserializes in chunks; the
-      one-shot `serialize()/deserialize()` helpers are thin wrappers over the streaming
-      path (§6.1).
+      one-shot `encode()/decode()` helpers are thin wrappers over the streaming path,
+      and the generated surface uses only the closed name set of §6.1.1 (§6.1).
 - [ ] All shared **test vectors** pass for both encode and decode, plus chunked,
       roundtrip, malformed, and skip tests (§7).
 - [ ] `assets/` populated per §8 — branding from `documentation`, `test_vectors.json`

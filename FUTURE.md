@@ -12,15 +12,7 @@ Related specs: [`CORELIB_PLAN.md`](CORELIB_PLAN.md) (wire format),
 
 ## A. Collection features
 
-### A1. Sparse arrays
-Because an array element's id **is** its 0-based index (MESSAGE_SPEC §5.1), the
-wire can already express gaps: a missing index simply means "that element is the
-default." Today we require **dense, ascending** elements.
-- **Why deferred:** no demand yet; dense is simpler and matches the common case.
-- **Impact:** none on the wire; a schema opt-in (e.g. `sparse: true`) plus codegen
-  to leave gaps at their default. Natural extension when needed.
-
-### A2. Map as a first-class schema type
+### A1. Map as a first-class schema type
 A map is currently the pattern `array of struct{ key, value }` (MESSAGE_SPEC §5.4).
 A `type: map` could be schema sugar that lowers to exactly that on the wire.
 - **Why deferred:** the pattern already works; sugar is pure convenience.
@@ -87,23 +79,9 @@ explicit list/mask of the fields to change (cf. `google.protobuf.FieldMask`).
 
 ---
 
-## E. Recursive types
+## E. Open reconciliation tasks (not features)
 
-### E1. Encoder cycle / depth guard
-Recursive types (trees, linked lists) are expressible via `$ref` to a `$defs`
-struct (MESSAGE_SPEC §5.4) and are allowed. Decode is bounded by `MAX_DEPTH = 255`.
-Encode of a **cyclic** in-memory object graph (a node pointing back to an ancestor)
-would loop forever.
-- **Why deferred:** trees are acyclic by construction; it is an implementation
-  hardening task, not a format change.
-- **Impact:** generated encoder should guard with the same `MAX_DEPTH` budget and
-  error rather than spin. Optionally: a way to mark/limit recursion in the schema.
-
----
-
-## F. Open reconciliation tasks (not features)
-
-### F1. Align the generator's existing string/blob array encoding with id = index
+### E1. Align the generator's existing string/blob array encoding with id = index
 MESSAGE_SPEC §5.1 defines array element id = 0-based index. The generator already
 emits `string`/`blob` arrays as sequences, so its encoder must use the same
 convention.
