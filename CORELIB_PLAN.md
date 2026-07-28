@@ -167,7 +167,7 @@ A decoder **MUST accept** a non-minimal varint that stays within the 64-bit
 bound below, decode it to the value it denotes, and — because every re-encode is
 canonical — emit the minimal form on any re-encode. A non-minimal encoding is
 therefore **not** the `INVALID` outcome (§5.2); it is normalized away, exactly
-as a non-canonical trailing-default array run is (MESSAGE_SPEC §3). The rule
+as a present-but-default *interior* array element is (MESSAGE_SPEC §2). The rule
 applies wherever a varint appears: field headers, `fixlen_word`s, array element
 counts, element values, and inside skipped fields.
 
