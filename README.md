@@ -33,7 +33,7 @@ What you write in a schema, and what it becomes on the wire. Several schema type
 
 | Schema type | On the wire | Note |
 |---|---|---|
-| `u8` `u16` `u32` `u64` | unsigned integer | the declared width is a storage hint; the wire carries one varint |
+| `u8` `u16` `u32` `u64` | unsigned integer | one varint carries every width; the declared width bounds the value — a wider value is invalid |
 | `i8` `i16` `i32` `i64` | signed integer | zig-zag |
 | `boolean` | unsigned integer | `0` or `1` |
 | `enum` | signed integer | the member's value, signed 32-bit range |
@@ -49,7 +49,7 @@ What you write in a schema, and what it becomes on the wire. Several schema type
 
 Small examples: a `u32` field with ID 0 and value 127 is `00 7f`. A `string` field with ID 1 and value `"A"` is `0a 0a 41`. A `struct` at ID 1 holding one `u32` child (ID 0, value 1) is `0e 00 01 07` — start marker, the child, end marker.
 
-Two schema attributes bound a field without ever reaching the wire: `maxlen` for a `string`/`blob`, and `count` for an array. `count` is a **capacity** — an array may carry `0 .. count` elements, and the count on the wire is its actual length. Exceeding either bound makes the message invalid.
+Two schema attributes bound a field without ever reaching the wire: `maxlen` for a `string`/`blob`, and `count` for an array. `count` is a **capacity** — an array may carry `0 .. count` elements, and the count on the wire is its actual length. An integer scalar's declared width bounds it the same way. Exceeding any of these bounds makes the message invalid.
 
 ## Defaults: what is not written
 

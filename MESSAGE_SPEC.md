@@ -42,8 +42,8 @@ header and marker bytes are never spelled out here — that's CORELIB_PLAN's job
 
 | YAML `type` | Wire type (CORELIB_PLAN) | Notes |
 |-------------|--------------------------|-------|
-| `u8` `u16` `u32` `u64` | unsigned integer (§4.4) | declared width is a **storage hint**; the wire carries a single unsigned integer regardless |
-| `i8` `i16` `i32` `i64` | signed integer (§4.5) | zig-zag |
+| `u8` `u16` `u32` `u64` | unsigned integer (§4.4) | one unsigned-integer wire type carries every width; the declared width is a **normative validity bound** on the value — a wire value outside its range is `INVALID` (§7.1) |
+| `i8` `i16` `i32` `i64` | signed integer (§4.5) | zig-zag; the declared width is a **normative validity bound** — a wire value outside its range is `INVALID` (§7.1) |
 | `boolean` | unsigned integer (§4.4) | no own wire type; encoded as `0`/`1` via the corelib bool helper |
 | `enum` | signed integer (§4.5) | no own wire type; carries the member's value, signed 32-bit range |
 | `bitfield` | unsigned integer (§4.4) | no own wire type; flags packed by generated code at their `pos` bits |
@@ -60,6 +60,18 @@ Not reaching the wire is not the same as not binding it: `maxlen` — like an ar
 `count` (§3) — is **not encoded**, but it **does constrain what is valid**. A
 `string`/`blob` longer than its `maxlen` is malformed input, exactly as an array
 element count over its `count` is (§7).
+
+**A scalar's declared width is a validity bound, not merely a storage hint.** The
+integer scalars (`u8`…`u64`, `i8`…`i64`) share one unsigned/signed wire type
+regardless of width (table above) — the width is **not** encoded — but it **does
+constrain what is valid**, exactly as `count` (§3) and `maxlen` do. A wire value
+outside the declared width's range — a `u8` carrying > 255, a `u16` > 65535, an
+`i16` outside −32768 .. 32767, and so on — is malformed input and **MUST** be
+reported `INVALID` (§7.1); a decoder **MUST NOT** mask it to the width (silent data
+loss) nor keep the over-width value. An `enum` is bound the same way by its signed
+32-bit range (table above). Because over-width is rejected, native-width storage is
+always sufficient — the receiver never has to hold a value wider than the field's
+declared type, which is the sense in which the width is also a *storage* fact.
 
 ---
 
@@ -583,21 +595,26 @@ This document adds only the obligations on **generated code**:
 - **Enforce schema bounds as `INVALID`.** The corelib cannot know the schema, so
   schema-bound violations are detected — and reported — by generated code: a wire
   element count `M > N` on a fixed-count array, a wrapper-array element id
-  `≥ N` (§3, §5.1), or a `string`/`blob` whose wire byte length exceeds its schema
-  `maxlen` (§2), is malformed input and **MUST** be reported as `INVALID`,
+  `≥ N` (§3, §5.1), a `string`/`blob` whose wire byte length exceeds its schema
+  `maxlen` (§2), or an **integer scalar whose wire value exceeds its declared
+  width** (§1), is malformed input and **MUST** be reported as `INVALID`,
   the same terminal outcome as the corelib's own (CORELIB_PLAN §5.2) — never as
-  `INCOMPLETE`, and never silently truncated to the bound.
+  `INCOMPLETE`, never silently truncated to the bound, and (for a scalar) never
+  masked to its width.
 
 ### 7.1 A declared bound binds every target (normative)
 
-A schema `count: N` on an array and a `maxlen: L` on a `string`/`blob` are
+A schema `count: N` on an array, a `maxlen: L` on a `string`/`blob`, and the
+**declared width** of an integer scalar (`u8`…`u64`, `i8`…`i64` — §1) are
 **wire-validity bounds**, not sizing hints. They bind **every implementation,
 regardless of its allocation strategy**: a heap-less target that pre-sizes a buffer
 from the bound and a heap target that allocates per message **MUST both reject**
 input that exceeds it, with the same `INVALID` outcome.
 
 A decoder **MUST NOT** accept an over-bound value merely because its storage happens
-to be able to hold it. Whether the bound is enforced must not be an emergent property
+to be able to hold it — a `u8` field whose value arrives as `16383` is rejected even
+though the corelib's ≥64-bit varint accumulator (CORELIB_PLAN §4.1) can hold it,
+exactly as an over-`maxlen` string is rejected on a heap target that could store it. Whether the bound is enforced must not be an emergent property
 of the memory model — two conformant implementations of the same schema **MUST** agree
 on which messages are valid.
 
@@ -634,7 +651,9 @@ NOT** decode its payload into the declared field.
 The check reaches exactly as far as the wire format distinguishes, and no further: `u8`,
 `u16`, `u32`, `u64`, `boolean`, `enum` and `bitfield` all map to the unsigned-integer wire
 type, so a header carrying that type is well-formed for every one of them. Value-range
-conformance is not a wire-type question and is outside this clause.
+conformance — including a scalar value that exceeds its declared width — is not a
+wire-type question and is outside this clause; it is a schema-bound validity check,
+handled as `INVALID` under §7.1.
 
 **Against a schema bound, this clause wins.** For a **fixlen array** the element count
 sits on the wire *before* the element subtype (CORELIB_PLAN §4.8), so a decoder that
