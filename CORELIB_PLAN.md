@@ -378,8 +378,21 @@ sequence end:    [ 0x07 ]      // (id = 0) << 3 | 0b111  ==  0x07, a single byte
 
 * A sequence exists **only on the wire**: its sole effect is to open a **fresh ID
   scope**. It has no type meaning of its own — nothing more than a new scope.
-* **Sequence end has no ID** (its ID is fixed at 0), so it is always the single byte
-  `0x07`.
+* **Sequence end carries no information in its id.** An encoder **MUST** emit a
+  sequence end as exactly `0x07` — `id = 0` in the minimal varint form §4.1 already
+  requires of every header. A decoder **MUST discard** the id: the marker closes the
+  innermost open sequence whatever the id says, and re-encodes as `0x07`. The id
+  sub-field exists only to keep the header format uniform (every header is one
+  `(id << 3) | type` varint); on a sequence end it carries no information and never
+  will, so there is nothing a sender can express by varying it.
+* **Discarded is not unvalidated.** The header is an ordinary field header, and its id
+  is bounded by `ID_MAX` exactly as every other header's is (§6.2): an id above the
+  ceiling is `INVALID` (§5.2), on a sequence end as anywhere else. That bound is on the
+  id's **value**, not on its spelling — §4.1 is untouched, so a non-minimal encoding of
+  an in-range id (`0x87 0x00` for id 0, or an id of 3) is accepted, decoded and
+  re-emitted as `0x07` like any other non-minimal varint. There is deliberately **no
+  exception** for wire type 7: one rule covers every header, so a decoder validates the
+  id at the point it reads it and never has to branch on the wire type first.
 * Because the end is a marker (not a length), an encoder can stream a sequence of
   unknown size. A decoder that wants to skip a sequence must walk it to its matching
   end, descending into nested sequences and tracking depth.
@@ -477,7 +490,7 @@ far*:
 |---|---|---|---|
 | **`COMPLETE`** | `OK` | the consumed bytes end **exactly** at a field boundary; a valid message *may* end here (more fields may also still follow) | more valid fields may extend it |
 | **`INCOMPLETE`** | `OK_BUT_INCOMPLETE` | the bytes end **inside** a field — an unterminated varint (§4.1: the `0x80` continuation flag was set but the stream stopped), a fixlen payload (§4.6) shorter than its declared length, or inside a sequence not yet closed; the partial tail is retained for the next `feed` | **yes** — feeding more bytes may complete it |
-| **`INVALID`** | `ERROR` | the bytes are malformed **regardless of what follows**: a reserved fixlen subtype (`0x4`–`0x7`, §4.6), a fixlen `fp32`/`fp64` whose declared length is not exactly 4 / 8 (§4.6), a varint exceeding 64 bits (§4.1), a length or count above its maximum (§6.2), nesting past `MAX_DEPTH` (§4.9), a sequence-end marker with no open sequence, or an invalid-UTF-8 `string` payload when the strict UTF-8 check is enabled (§6.4) | no — terminal |
+| **`INVALID`** | `ERROR` | the bytes are malformed **regardless of what follows**: a reserved fixlen subtype (`0x4`–`0x7`, §4.6), a fixlen `fp32`/`fp64` whose declared length is not exactly 4 / 8 (§4.6), a varint exceeding 64 bits (§4.1), an **id**, length or count above its maximum (§6.2), nesting past `MAX_DEPTH` (§4.9), a sequence-end marker with no open sequence, or an invalid-UTF-8 `string` payload when the strict UTF-8 check is enabled (§6.4) | no — terminal |
 
 **`INCOMPLETE` is explicitly NOT an error — it is a valid, first-class outcome**,
 returned the same way from a one-shot `decode` and a streaming `feed`. A conformant
@@ -493,7 +506,7 @@ neighbour:
 non-`COMPLETE` outcomes are not symmetric. When the bytes consumed so far
 contain a construct that is malformed **independently of any bytes that might
 follow** — any of the table's `INVALID` conditions: a reserved fixlen subtype,
-an overlong varint, a wrong-width `fp32`/`fp64` fixlen (§4.6), an over-maximum
+an overlong varint, a wrong-width `fp32`/`fp64` fixlen (§4.6), an over-maximum id,
 length or count, nesting past `MAX_DEPTH`, a sequence-end with no open
 sequence — the outcome is **`INVALID`**, even if the input is *also* truncated
 (ends mid-field or with an open sequence). `INCOMPLETE` is reported **only**
@@ -808,6 +821,15 @@ API (§6) and keeps its own names; it is not part of the generated object's surf
 These are **format-wide ceilings**: properties of the wire format itself, identical for
 every implementation, and exceeding one is `INVALID` (§5.2). They are not a protection
 mechanism against a hostile sender — that is §6.2.1.
+
+`ID_MAX` and the `Field ID range` bind the id of **every** field header, without
+exception: the value-bearing ones — unsigned, signed, fixlen, the array types and
+sequence *start* — and the **sequence-end** marker alike. That a sequence end's id is
+discarded rather than used (§4.9) does not exempt it. The ceiling is stated over
+headers, not over headers whose id a decoder happens to consult, and keeping it uniform
+is what lets an implementation validate the id where it decodes the header — one
+unconditional comparison — instead of carrying a per-wire-type exception through every
+decode surface.
 
 #### 6.2.1 Receiver-side technical limits (normative)
 
@@ -1153,9 +1175,20 @@ the language's idiomatic convention — `tests/` in Rust and Python,
      assert the result is identical to feeding it all at once. This proves the state
      machine suspends/resumes at any byte boundary.
 5. **Malformed-input tests** — an overlong (`>64`-bit) varint, an unbalanced sequence
-   end, an oversized length/count, nesting past `MAX_DEPTH`, a reserved fixlen subtype
-   (`0x4`–`0x7`) → must return the `INVALID` decode outcome (a well-defined error),
-   never crash.
+   end, an oversized id/length/count, nesting past `MAX_DEPTH`, a reserved fixlen
+   subtype (`0x4`–`0x7`) → must return the `INVALID` decode outcome (a well-defined
+   error), never crash. Cover the oversized id on a **sequence-end** header too, not
+   only on a value-bearing one: §6.2 admits no exception, and an implementation that
+   validates the id only in the branches that *use* it will pass the value-bearing case
+   and miss this one.
+5b. **Tolerance tests** — input that is non-canonical but well-formed **MUST** decode to
+   the value it denotes and re-encode canonically, never `INVALID`: a non-minimal varint
+   (§4.1) at a field header, a `fixlen_word` and an element count; and a **sequence-end
+   header whose id is non-zero but within `ID_MAX`** (§4.9), which must decode as an
+   ordinary sequence end and re-encode as `0x07`. These are the cases where a decoder is
+   *stricter* than the format allows — the mirror of the malformed-input tests above, and
+   the ones a majority-vote conformance check cannot catch, since an implementation may
+   be uniformly too strict.
 6. **Truncation tests** — a message cut short mid-field (a lone dangling varint such as
    `0x80`, a fixlen payload shorter than its declared length, an unclosed sequence) →
    must return **`INCOMPLETE`**, *not* `INVALID` and *not* `COMPLETE`. It is a
