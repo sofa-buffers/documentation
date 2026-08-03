@@ -379,14 +379,29 @@ sequence end:    [ 0x07 ]      // (id = 0) << 3 | 0b111  ==  0x07, a single byte
 * A sequence exists **only on the wire**: its sole effect is to open a **fresh ID
   scope**. It has no type meaning of its own — nothing more than a new scope.
 * **Sequence end has no ID** (its ID is fixed at 0), so it is always the single byte
-  `0x07`. This is normative in **both** directions: an encoder **MUST** emit exactly
-  `0x07`, and a decoder **MUST** reject a sequence-end header (wire type `0b111`) whose
-  id is non-zero as `INVALID` (§5.2). The id sub-field exists only to keep the header
-  format uniform (every header is one `(id << 3) | type` varint); on a sequence-end it
-  is never consulted, so the single valid encoding is the canonical `0x07`. This is
-  **stricter** than the `ID_MAX` ceiling that bounds a value-bearing field's id (§6.2):
-  a sequence-end id is not merely bounded by `ID_MAX`, it is fixed at 0 — `0x0F`
-  (id 1), `0x07` with `id = ID_MAX`, and `id = ID_MAX + 1` are all equally `INVALID`.
+  `0x07`. This is normative in **both** directions, on two distinct axes — the *value*
+  of the id, and the *encoding* of the header varint that carries it:
+  * **Encode.** An encoder **MUST** emit a sequence end as the single byte `0x07`; that
+    is `id = 0` in the minimal varint form §4.1 already requires of every header.
+  * **Decode.** A decoder **MUST** reject a sequence-end header (wire type `0b111`)
+    whose id is **non-zero** as `INVALID` (§5.2). A **non-minimal** encoding of
+    `id = 0` — `0x87 0x00`, `0x87 0x80 0x00` — stays valid: §4.1's tolerance applies
+    "wherever a varint appears: field headers, …", and the value it denotes is 0. It is
+    normalized to `0x07` on re-encode like any other non-minimal varint, **not**
+    rejected. The new rule constrains the id's *value*; §4.1 governs its *spelling*.
+
+  The id sub-field exists only to keep the header format uniform (every header is one
+  `(id << 3) | type` varint); on a sequence-end it is never consulted, which is why
+  fixing it at 0 costs nothing. This is **stricter** than the `ID_MAX` ceiling that
+  bounds a value-bearing field's id (§6.2): a sequence-end id is not merely bounded by
+  `ID_MAX`, it is fixed at 0 — `0x0F` (id 1), `0xFF 0xFF 0xFF 0xFF 0x3F`
+  (id = `ID_MAX`), and `id = ID_MAX + 1` are all equally `INVALID`.
+* **Truncation.** The id occupies bits 3–6 of the header's **first** byte, so `0x0F`
+  (id 1) is decidable at once, while `id = 16` (`0x87 0x01`) and `id = ID_MAX + 1`
+  (`0x87 0x80 0x80 0x80 0x40`) carry zero id bits there. A decoder holding only `0x87`
+  therefore reports **`INCOMPLETE`**: the varint may still resolve to `id = 0` via a
+  non-minimal encoding, so the message is not yet malformed. `INVALID` is due once a
+  non-zero id bit has actually been read (§5.2).
 * Because the end is a marker (not a length), an encoder can stream a sequence of
   unknown size. A decoder that wants to skip a sequence must walk it to its matching
   end, descending into nested sequences and tracking depth.
