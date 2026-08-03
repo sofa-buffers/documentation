@@ -379,7 +379,20 @@ sequence end:    [ 0x07 ]      // (id = 0) << 3 | 0b111  ==  0x07, a single byte
 * A sequence exists **only on the wire**: its sole effect is to open a **fresh ID
   scope**. It has no type meaning of its own — nothing more than a new scope.
 * **Sequence end has no ID** (its ID is fixed at 0), so it is always the single byte
-  `0x07`.
+  `0x07`. This is normative in **both** directions, but they are not symmetric:
+  * **Encode.** An encoder **MUST** emit a sequence end as exactly `0x07` — `id = 0` in
+    the minimal varint form §4.1 already requires of every header.
+  * **Decode.** A decoder **MUST accept** a sequence-end header (wire type `0b111`)
+    carrying **any** id, **discard** that id, and re-encode the marker as `0x07`. A
+    non-zero id is **not** `INVALID`: it is normalized away, exactly as a non-minimal
+    varint is (§4.1). The id sub-field exists only to keep the header format uniform
+    (every header is one `(id << 3) | type` varint); on a sequence end it carries no
+    information and never will, so there is nothing for a decoder to validate and
+    nothing a sender can express by varying it.
+
+  The header varint is still bounded as every varint is: one exceeding 64 bits is
+  `INVALID` under §4.1, on a sequence end as anywhere else. What does **not** apply is
+  the `ID_MAX` ceiling — see §6.2.
 * Because the end is a marker (not a length), an encoder can stream a sequence of
   unknown size. A decoder that wants to skip a sequence must walk it to its matching
   end, descending into nested sequences and tracking depth.
@@ -809,6 +822,13 @@ These are **format-wide ceilings**: properties of the wire format itself, identi
 every implementation, and exceeding one is `INVALID` (§5.2). They are not a protection
 mechanism against a hostile sender — that is §6.2.1.
 
+`ID_MAX` and the `Field ID range` above bound the id of a **value-bearing** field header
+— unsigned, signed, fixlen, the array types, and sequence *start*. They do **not** apply
+to the **sequence-end** marker, whose id is discarded rather than used (§4.9): there is
+no value space to bound, so an over-`ID_MAX` id on a sequence end is accepted and
+normalized away like any other. The header varint remains subject to §4.1's 64-bit
+bound, which is a constraint on the *encoding* rather than on an id.
+
 #### 6.2.1 Receiver-side technical limits (normative)
 
 A field whose schema declares no bound (`maxlen`/`count` omitted — MESSAGE_SPEC §7.2) is
@@ -1156,6 +1176,14 @@ the language's idiomatic convention — `tests/` in Rust and Python,
    end, an oversized length/count, nesting past `MAX_DEPTH`, a reserved fixlen subtype
    (`0x4`–`0x7`) → must return the `INVALID` decode outcome (a well-defined error),
    never crash.
+5b. **Tolerance tests** — input that is non-canonical but well-formed **MUST** decode to
+   the value it denotes and re-encode canonically, never `INVALID`: a non-minimal varint
+   (§4.1) at a field header, a `fixlen_word` and an element count; and a **sequence-end
+   header carrying a non-zero id** (§4.9), which must decode as an ordinary sequence end
+   and re-encode as `0x07`. These are the cases where a decoder is *stricter* than the
+   format allows — the mirror of the malformed-input tests above, and the ones a
+   majority-vote conformance check cannot catch, since an implementation may be
+   uniformly too strict.
 6. **Truncation tests** — a message cut short mid-field (a lone dangling varint such as
    `0x80`, a fixlen payload shorter than its declared length, an unclosed sequence) →
    must return **`INCOMPLETE`**, *not* `INVALID` and *not* `COMPLETE`. It is a
