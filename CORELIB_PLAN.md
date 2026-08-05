@@ -642,6 +642,22 @@ should be adapted to the language's conventions; semantics are fixed.
   outcome `COMPLETE` / `INCOMPLETE` / `INVALID` (§5.2). **No** separate
   `finish`/`finalize`/`end` step — `INCOMPLETE` is surfaced to the caller, never
   auto-promoted to an error.
+* **Chunk lifetime (normative).** A fed chunk is borrowed **only for the duration of the
+  `feed` call**: once `feed` returns, the caller may reuse, overwrite or free that memory,
+  and the decoded message **MUST NOT** be affected. A decoder that hands a `string`/`blob`
+  destination a slice into a fed chunk therefore has to copy out of it before returning —
+  as it already must for a payload split across chunks, which has no single chunk to point
+  at. The **one-shot** `decode(buffer)` is exempt in the obvious way: the caller supplies
+  the whole buffer and keeps it alive across the call, so a zero-copy view into *that*
+  buffer stays valid for as long as the buffer does, and ports that offer one say so
+  (§9.6).
+
+  Without this rule the caller's obligation depends on where the chunk boundaries happened
+  to fall — a payload arriving whole in one chunk could be borrowed while the same payload
+  split across two is copied — so the *same message over a different chunking* would place
+  different lifetime requirements on the same calling code. That is the class §6.4 and
+  §7.2 item 4 already forbid for the decode outcome; memory obligations deserve the same
+  answer.
 * Per-field: **read** the value into a typed destination, or **skip**. If the language
   supports overloading a single `read(destination)` suffices; otherwise use
   `read_<type>(destination)` variants.
@@ -1199,6 +1215,11 @@ the language's idiomatic convention — `tests/` in Rust and Python,
    * **Decode** by feeding the input **one byte at a time** (and in odd-sized chunks);
      assert the result is identical to feeding it all at once. This proves the state
      machine suspends/resumes at any byte boundary.
+   * **Overwrite every chunk after `feed` returns** — scrub it with a fill byte, or free
+     it — and assert the decoded message is unchanged. This is what makes the chunk
+     lifetime of §6 a checked property rather than a stated one: a decoder that keeps a
+     slice into a fed chunk reads back the fill pattern, and nothing else in this list
+     would notice.
 5. **Malformed-input tests** — an overlong (`>64`-bit) varint, an unbalanced sequence
    end, an oversized id/length/count, nesting past `MAX_DEPTH`, a reserved fixlen
    subtype (`0x4`–`0x7`) → must return the `INVALID` decode outcome (a well-defined
@@ -1321,9 +1342,13 @@ this into an API listing.
 * **Output buffer (encoding)** — who owns the buffer written into, whether the
   library allocates or grows it, and what happens when it fills (flush sink /
   reuse vs. a buffer-full error).
-* **Input buffer (decoding)** — who owns the bytes being parsed, how long they
-  must outlive the call, and whether decoded `string`/`blob` values borrow into
-  that buffer (valid only during the callback, copy out to keep) or are copied.
+* **Input buffer (decoding)** — who owns the bytes being parsed and how long they must
+  outlive the call. For the **one-shot** `decode(buffer)` this is where a port states
+  whether decoded `string`/`blob` values are zero-copy views into the caller's buffer
+  (valid as long as it is) or copies. For the **streaming** `feed(chunk)` there is nothing
+  to choose: §6 requires a fed chunk to be reusable the moment `feed` returns, so a
+  streaming decode always copies out. Say which of the two the port's `decode` does; do
+  not restate the streaming rule.
 
 State plainly whether the hot path allocates and whether any library-owned heap
 memory exists (e.g. a small internal carry/accumulator for chunk-straddling
