@@ -1026,8 +1026,21 @@ assembly buffer is required. The outcome mapping follows §5.2:
 * a multi-byte sequence truncated at **end-of-payload** (declared length
   reached mid-sequence) → `INVALID`: no further bytes belong to this string;
 * a byte that cannot begin or continue any valid sequence (e.g. `0xFF`, a bare
-  continuation byte) is malformed regardless of what follows → the decoder MAY
-  report `INVALID` immediately, mid-payload (§5.2 precedence).
+  continuation byte) is malformed regardless of what follows — but the verdict is
+  still reported **at payload completion**, not before. A decoder **MUST NOT**
+  report `INVALID` mid-payload for such a byte while the declared length has not
+  been reached; that input is `INCOMPLETE` until the payload ends, and `INVALID`
+  once it does.
+
+  This is the one place where §5.2's INVALID-dominates-INCOMPLETE precedence does
+  *not* pull the verdict forward, and the reason is that this check is not a
+  property of the wire. `SOFAB_STRICT_UTF8` has a normative OFF mode in which the
+  same bytes are accepted, and validation runs only where a `string` is
+  **materialized**, never on skip — so the same payload is already valid or invalid
+  depending on a build flag and on whether the handler read it. Letting its
+  *timing* decide the verdict as well would make two conformant decoders disagree
+  on accept-vs-reject, which is exactly what MESSAGE_SPEC §7.1 forbids and what
+  this section's own opening sentence promises a chunk boundary cannot do.
 
 **Skipped fields are never validated (normative).** Skipping stays what it is
 everywhere else in the design: a length jump over bytes that are not
