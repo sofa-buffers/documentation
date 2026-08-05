@@ -444,7 +444,17 @@ consumed incrementally.
 The encoder writes into an **output buffer** and invokes a **flush/drain** operation when
 that buffer fills (or on explicit flush). The flush forwards the accumulated bytes
 downstream (transmit, write to file, etc.) and the encoder continues into the now-empty
-buffer. The output buffer can be **far smaller than the message**.
+buffer. The output buffer can be **arbitrarily smaller than the message — down to a single
+byte** (normative).
+
+That floor is the encode-side twin of the decoder's, which §6 already states as "`feed(bytes)`
+accepting **arbitrarily small chunks**" and §7.2 item 4 tests at one byte at a time. Both
+directions need it for the same reason: without a floor, "the buffer may be smaller than the
+message" is satisfied by a buffer that is smaller by one byte, and a caller writing portable
+code has no way to discover what size actually works — the answer becomes per-implementation
+and is reported only as a runtime error, once it is too late. An encoder therefore **MUST** be
+able to split a single write across a flush; it may not require any write to land contiguously
+in the buffer.
 
 Required capabilities:
 
@@ -1168,9 +1178,11 @@ the language's idiomatic convention — `tests/` in Rust and Python,
    recovered fields/values match `fields`.
 3. **Roundtrip tests** — encode → decode → compare for representative messages.
 4. **Chunked-streaming tests** — the defining requirement:
-   * **Encode** into a buffer **smaller than the message**, driving the flush
-     callback / sink repeatedly; assert the concatenated output is byte-identical to
-     the one-shot output.
+   * **Encode** into a buffer **one byte long**, driving the flush callback / sink
+     repeatedly; assert the concatenated output is byte-identical to the one-shot output.
+     One byte rather than merely "smaller than the message" for the same reason the decode
+     bullet below says one byte at a time: it is the size that proves no write needs to land
+     contiguously (§5.1).
    * **Decode** by feeding the input **one byte at a time** (and in odd-sized chunks);
      assert the result is identical to feeding it all at once. This proves the state
      machine suspends/resumes at any byte boundary.
