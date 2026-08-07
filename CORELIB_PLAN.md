@@ -156,6 +156,35 @@ value 16384    -> 0x80 0x80 0x01
 
 A decoder must accumulate into at least a 64-bit register and shift by 7 per byte.
 
+**No value before the final byte (normative).** A varint has **no value** until the
+byte with a clear continuation flag arrives. A decoder **MUST NOT** evaluate any part
+of an incomplete varint — neither a packed sub-field nor a partial magnitude — and
+**MUST NOT** let such a part influence a decode outcome, **even when those bits are
+already arithmetically fixed** and no continuation byte could change them. Until the
+varint ends, the construct it belongs to is `INCOMPLETE` (§5.2).
+
+The bits this rule is about are real, which is why it has to be stated. Each further
+byte contributes a multiple of 128, and 128 is divisible by 8, so the **low 3 bits of
+any varint are settled by its first byte**. Both words in this format pack a 3-bit
+field there — the wire type in a field header (§4.3) and the subtype in a
+`fixlen_word` (§4.6) — so a decoder *could* read either one early. It **MUST NOT**:
+
+* a field header yields `(id, type)` only when the header varint ends;
+* a `fixlen_word` yields `(length, subtype)` only when that varint ends. A message
+  ending inside it is `INCOMPLETE` even when the settled low bits already carry a
+  **reserved subtype** `0x4`–`0x7` (§4.6), and even when the field's id would violate
+  a schema bound (MESSAGE_SPEC §7.1) once the subtype confirmed the field is the
+  declared one (MESSAGE_SPEC §7.3). Those tests are satisfiable only on the complete
+  word.
+
+*(Rationale: the outcome must not depend on how far a decoder's varint loop happens to
+unroll. Peeking splits one word into two decision points, so within a single
+implementation a push surface reporting the completed word and a pull surface reading
+its first byte reach different verdicts for the same bytes — which is exactly the
+chunk-boundary sensitivity §7.2 item 4 requires every port to test against. The
+`INVALID`-over-`INCOMPLETE` precedence of §5.2 is unaffected: it ranks constructs the
+decoder has actually read, and an unfinished varint is not one of them.)*
+
 **Minimality on encode, tolerance on decode (normative).** An encoder **MUST**
 emit every varint in its **minimal form** — the fewest bytes that represent the
 value, i.e. no continuation byte that contributes only zero high bits (the final
@@ -1240,6 +1269,11 @@ the language's idiomatic convention — `tests/` in Rust and Python,
    must return **`INCOMPLETE`**, *not* `INVALID` and *not* `COMPLETE`. It is a
    well-defined non-error outcome; feeding the missing bytes then completes it, and there
    is no `finish` step that promotes it to an error (§5.2).
+   Cover a **`fixlen_word` cut after its first byte** too, with that byte carrying a
+   **reserved subtype** (`0x4`–`0x7`): the subtype is already settled by the low 3 bits,
+   so an implementation that evaluates it early answers `INVALID` where §4.1 requires
+   `INCOMPLETE`. Nothing else in this list exercises the no-partial-evaluation rule —
+   the dangling `0x80` above carries no settled sub-field to peek at.
 7. **Skip tests** — decode while ignoring some fields and whole sub-sequences; assert
    correct resync on the following field.
 
