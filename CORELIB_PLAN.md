@@ -606,6 +606,39 @@ only safe if "returned without installing a buffer" has exactly one meaning. Rea
 taking sink must override; reading it the other way round would make the dangerous case
 the implicit one.)*
 
+**Pass-through of a divisible run (normative, optional).** A `string` or `blob` payload is
+the one thing an encoder writes that it does not *produce* — the bytes on the wire are the
+bytes the caller supplied. An encoder **MAY** therefore hand such a run to the sink
+**directly**, instead of copying it through the output buffer, under all of the following:
+
+* **The caller has granted it** when installing the sink. Pass-through is **off by
+  default**: a sink that was not told it may receive foreign memory never does.
+* **The installation's start offset is zero.** A non-zero offset means the sink reserves
+  room in front of every unit it is handed — a framing header per packet — and a run
+  arriving from elsewhere has no such room. Pass-through is unavailable for that
+  installation whatever the caller granted.
+* **Buffered bytes are drained first**, so what the sink receives stays in wire order.
+* **Only a divisible run qualifies.** Everything atomic (§ above) is produced by the
+  encoder and exists nowhere else to hand over.
+
+**Passed-through memory is borrowed for the duration of the call.** The sink **MUST NOT**
+retain it, and such a call is **not** a buffer handover: the take-and-replace contract
+above does not apply to it, installing a replacement in response to one is meaningless, and
+the encoder's active buffer is unchanged by it. This mirrors the input side, where a fed
+chunk is likewise borrowed only for the duration of `feed` (§6).
+
+A port **MAY** ignore the permission entirely and always copy. That is conformant — the
+output is byte-identical either way, and the permission is an invitation, not an
+obligation. Ports for constrained targets are expected to ignore it.
+
+*(Rationale: the two shapes do not compete. A transport that fragments cannot use a
+passed-through run anyway — the run does not fit one packet, so the sink would have to
+split it itself, at a point where no header room was reserved. Such a sink simply does not
+grant the permission and nothing changes for it. A sink that accumulates or writes to a
+socket has neither constraint and saves a copy of the whole payload, which for a large
+`blob` is the dominant cost of encoding it. Making this the caller's decision puts it where
+the knowledge is: only the caller knows what its sink does with what it is handed.)*
+
 See §6 for the full list of write operations (typed scalars, arrays, sequence framing).
 
 ### 5.2 Streaming Deserialization (Decoder)
@@ -1366,6 +1399,14 @@ the language's idiomatic convention — `tests/` in Rust and Python,
      pattern, and the one-byte test above would not notice, since that sink copies and
      returns. Pair it with a **copying** sink that returns without installing anything and
      assert the same output, so both halves of the returning-callback contract are covered.
+   * **No foreign memory without permission** — encode a `blob` several times the buffer
+     size through a sink that was **not** granted pass-through, and assert every callback
+     argument lies within the installed buffer (compare identity, or that the pointer falls
+     inside it). Repeat with a non-zero start offset and the permission **granted**, and
+     assert the same: an offset reserves header room in every unit, so pass-through is
+     unavailable there regardless (§5.1). A port that never passes through passes both by
+     construction; a port that does has exactly two places to get the condition wrong, and
+     these are them.
    * **Decode** by feeding the input **one byte at a time** (and in odd-sized chunks);
      assert the result is identical to feeding it all at once. This proves the state
      machine suspends/resumes at any byte boundary.
@@ -1503,7 +1544,10 @@ this into an API listing.
   reuse vs. a buffer-full error). State the port's **`MIN_OUTPUT_BUFFER`** (§5.1)
   here, and that it applies to a buffer installed with a sink: it is the number a
   caller needs before it can size a streaming buffer, and this is the section they
-  read to find out who allocates what.
+  read to find out who allocates what. If the port implements **pass-through** of a
+  `string`/`blob` run (§5.1), say so here too — it is the one case where a sink is
+  handed memory that is not the output buffer, and a reader of this section needs
+  to know before writing a sink that retains what it receives.
 * **Input buffer (decoding)** — who owns the bytes being parsed and how long they must
   outlive the call. For the **one-shot** `decode(buffer)` this is where a port states
   whether decoded `string`/`blob` values are zero-copy views into the caller's buffer
