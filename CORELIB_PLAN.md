@@ -502,19 +502,22 @@ the bytes it was handed or **take** the buffer — pass it to a transport, queue
 asynchronous write, hand it to DMA — and the encoder cannot tell the two apart. The
 contract therefore rests on what the callback does before it returns:
 
-* Returning **without** installing a buffer means the sink **copied**. The existing buffer
-  stays the active one and the encoder resumes writing into it, with the write cursor at
-  the **start of the buffer** — not at the start offset the buffer was installed with.
+* Returning **without** installing a buffer means the sink **copied**. The active buffer
+  stays active and the encoder resumes writing into it at offset **0**.
 * A sink that **takes** the buffer **MUST** install a replacement before returning, using
   the mid-stream buffer-set operation above. It **MUST NOT** return without one: the
   encoder would keep writing into storage the transport now owns.
 
-The start offset belongs to the buffer it was installed with, and is consumed once. A sink
-that needs fresh header room in **every** flushed unit — one framing header per packet —
-gets it by installing a buffer explicitly, which may be the same buffer: `buffer_set(buf,
-len, offset)` re-establishes the reservation, where a bare return would not. Both the
-copy-and-continue and the take-and-replace shapes are expressible, and which one is in
-effect is stated by the callback rather than inferred by the encoder.
+**The start offset belongs to the installation, not to the buffer.** Each buffer-set call
+begins a new installation and its cursor starts at *that call's* offset; the offset is then
+consumed, so any later flush that the callback returns from without installing anything
+resumes at 0. Passing the **same** buffer to buffer-set is a new installation like any
+other — that is how a sink gets fresh header room in **every** flushed unit, one framing
+header per packet: `buffer_set(buf, len, offset)` re-arms the reservation, where a bare
+return would not.
+
+Both the copy-and-continue and the take-and-replace shapes are therefore expressible, and
+which one is in effect is stated by the callback rather than inferred by the encoder.
 
 *(Rationale: the zero-copy path is the reason the buffer-set operation exists — encode
 straight into the packet, hand the packet on, encode the next into another. That path is
