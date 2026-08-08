@@ -501,12 +501,12 @@ smallest buffer it accepts **for streaming**:
 * A port that requires atomic units to land contiguously declares the largest run it
   reserves as one piece. The derived floor is **10 bytes**, a 64-bit varint at
   `ceil(64/7)`; a port that reserves a header together with its value declares that sum.
-* A declaration **MUST NOT** cover more than **one field's metadata plus one element** —
-  a header varint, an `element_count`, a `fixlen_word` and one `fp64`, which is `10 + 10 +
-  10 + 8 = 38` bytes, so **64** is the hard ceiling. A port that reserves across fields or
-  across a batch of array elements **MUST** flush instead of raising its declaration: the
-  constant states what one unit of encoding needs, not how far ahead an implementation
-  would like to look.
+* A declaration **MUST NOT** exceed **20** — a header varint and its value, `2 × 10`. That
+  is the largest reservation any port makes, and it is also the smallest message a schema
+  can bound: a single scalar field is at most a header plus a value. A ceiling above it
+  would let a port demand more than a whole message can occupy. Reserving further ahead —
+  a field's metadata as a group, or a batch of array elements — **MUST** be handled by
+  flushing, not by raising the declaration.
 
 **The minimum binds a buffer installed with a flush sink**, at installation and at every
 mid-stream buffer-set. Such a buffer **MUST** satisfy `buflen - offset >=
@@ -1715,7 +1715,7 @@ A new `corelib-<lang>` is conformant when:
       sink, with mid-stream buffer swap (§5.1), over a **caller-supplied** buffer with a
       start offset — self-allocation, if offered at all, is the convenience form and not
       the only entry point.
-- [ ] **`MIN_OUTPUT_BUFFER` declared** (§5.1), at most 64, stated in the README's memory
+- [ ] **`MIN_OUTPUT_BUFFER` declared** (§5.1), at most 20, stated in the README's memory
       section (§9.6), enforced on every buffer installed **with a sink** and on no other,
       and used as the size in the §7.2 item 4 encode test.
 - [ ] **Streaming decode** via `feed` of arbitrarily small chunks, push-callback /
