@@ -495,25 +495,38 @@ native string is UTF-16 emits a payload run that its input never was, and it is 
 the buffer that a flush divides.
 
 **`MIN_OUTPUT_BUFFER` (normative).** A corelib **MUST** expose a documented constant — the
-smallest output buffer it accepts:
+smallest buffer it accepts **for streaming**:
 
 * A port that splits atomic units too declares **`1`**.
-* A port that requires atomic units to land contiguously declares the largest atomic unit
-  it writes as one piece. The derived floor is **10 bytes**, a 64-bit varint at
-  `ceil(64/7)`; a port that reserves a header and its value together declares that sum.
-* The declared value **MUST NOT** exceed **64**.
+* A port that requires atomic units to land contiguously declares the largest run it
+  reserves as one piece. The derived floor is **10 bytes**, a 64-bit varint at
+  `ceil(64/7)`; a port that reserves a header together with its value declares that sum.
+* A declaration **MUST NOT** cover more than **one field's metadata plus one element** —
+  a header varint, an `element_count`, a `fixlen_word` and one `fp64`, which is `10 + 10 +
+  10 + 8 = 38` bytes, so **64** is the hard ceiling. A port that reserves across fields or
+  across a batch of array elements **MUST** flush instead of raising its declaration: the
+  constant states what one unit of encoding needs, not how far ahead an implementation
+  would like to look.
 
-Every buffer handed to the encoder — at construction and at every mid-stream buffer-set —
-**MUST** satisfy `buflen - offset >= MIN_OUTPUT_BUFFER`. A buffer below it is rejected
-**where it is handed over**, by the same mechanism the port uses for an out-of-range offset
-(an exception, or an error status), never partway through a message. Any buffer at or above
-it **MUST** work and **MUST** produce output byte-identical to the one-shot path.
+**The minimum binds a buffer installed with a flush sink**, at installation and at every
+mid-stream buffer-set. Such a buffer **MUST** satisfy `buflen - offset >=
+MIN_OUTPUT_BUFFER` and is rejected **where it is handed over**, by the same mechanism the
+port uses for an out-of-range offset (an exception, or an error status), never partway
+through a message. Any buffer at or above it **MUST** work and **MUST** produce output
+byte-identical to the one-shot path.
+
+**A buffer installed without a sink is subject to no minimum.** No flush can occur, so no
+atomic unit can be split and the constant has nothing to say: the buffer either holds the
+message or reports buffer-full. This is the case a caller sizes from the generated
+`MAX_SIZE` (§6.1.1), and it stays exact — a message that encodes to two bytes may be
+encoded into a two-byte buffer on any port, whatever that port declares.
 
 This is what §5.1 previously secured by fixing the floor at one byte for every port: a
 caller writing portable code must be able to **discover** the size that works, rather than
 find out at runtime once it is too late. A declared constant serves that directly — the
-caller sizes its buffer from a value the API gives it — and a bounded one keeps the answer
-small enough to be uninteresting.
+caller sizes its buffer from a value the API gives it — and confining it to the streaming
+case keeps it from imposing a floor on the one-shot path, where no flush can occur and no
+floor is needed.
 
 **Declaring `1` stays fully conformant, and is the right choice for a footprint profile.**
 Byte-granular encoding is what the wire format was designed around, and on a target that
@@ -1325,10 +1338,13 @@ the language's idiomatic convention — `tests/` in Rust and Python,
      it is the same test as before — no write needs to land contiguously (§5.1). Cover a
      `string` or `blob` payload longer than the buffer, so the divisible-run path is
      exercised whatever the declared value is.
-   * **Reject a buffer below the minimum** — construct with `buflen - offset` one byte short
-     of `MIN_OUTPUT_BUFFER` and assert it fails **there**, by the port's own out-of-range
-     mechanism, rather than partway through a message (§5.1). A port declaring `1` tests the
-     zero-length buffer.
+   * **Reject a buffer below the minimum** — install one **with a flush sink**, with
+     `buflen - offset` one byte short of `MIN_OUTPUT_BUFFER`, and assert it fails **there**,
+     by the port's own out-of-range mechanism, rather than partway through a message (§5.1).
+     A port declaring `1` tests the zero-length buffer. Pair it with the converse: the same
+     undersized buffer **without** a sink is accepted, and a message that fits encodes into
+     it — the minimum is a streaming constant and must not become a floor on the one-shot
+     path.
    * **Encode across a taking sink** — a flush callback that installs a *different* buffer
      on every call, scrubbing the one it was handed before returning; assert the
      concatenated output still equals the one-shot output. This is the zero-copy handover
@@ -1471,8 +1487,9 @@ this into an API listing.
 * **Output buffer (encoding)** — who owns the buffer written into, whether the
   library allocates or grows it, and what happens when it fills (flush sink /
   reuse vs. a buffer-full error). State the port's **`MIN_OUTPUT_BUFFER`** (§5.1)
-  here: it is the number a caller needs before it can size anything, and this is
-  the section they read to find out who allocates what.
+  here, and that it applies to a buffer installed with a sink: it is the number a
+  caller needs before it can size a streaming buffer, and this is the section they
+  read to find out who allocates what.
 * **Input buffer (decoding)** — who owns the bytes being parsed and how long they must
   outlive the call. For the **one-shot** `decode(buffer)` this is where a port states
   whether decoded `string`/`blob` values are zero-copy views into the caller's buffer
@@ -1699,8 +1716,8 @@ A new `corelib-<lang>` is conformant when:
       start offset — self-allocation, if offered at all, is the convenience form and not
       the only entry point.
 - [ ] **`MIN_OUTPUT_BUFFER` declared** (§5.1), at most 64, stated in the README's memory
-      section (§9.6), enforced where each buffer is handed over, and used as the size in
-      the §7.2 item 4 encode test.
+      section (§9.6), enforced on every buffer installed **with a sink** and on no other,
+      and used as the size in the §7.2 item 4 encode test.
 - [ ] **Streaming decode** via `feed` of arbitrarily small chunks, push-callback /
       pull-read, lazy field binding, and auto-skip (§5.2), returning the three-valued
       `COMPLETE` / `INCOMPLETE` / `INVALID` outcome with **no** `finish`/`finalize` step —
