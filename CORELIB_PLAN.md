@@ -473,29 +473,109 @@ consumed incrementally.
 The encoder writes into an **output buffer** and invokes a **flush/drain** operation when
 that buffer fills (or on explicit flush). The flush forwards the accumulated bytes
 downstream (transmit, write to file, etc.) and the encoder continues into the now-empty
-buffer. The output buffer can be **arbitrarily smaller than the message — down to a single
-byte** (normative).
+buffer. The output buffer **may be arbitrarily smaller than the message** (normative):
+what bounds memory is the buffer, not the message.
 
-That floor is the encode-side twin of the decoder's, which §6 already states as "`feed(bytes)`
-accepting **arbitrarily small chunks**" and §7.2 item 4 tests at one byte at a time. Both
-directions need it for the same reason: without a floor, "the buffer may be smaller than the
-message" is satisfied by a buffer that is smaller by one byte, and a caller writing portable
-code has no way to discover what size actually works — the answer becomes per-implementation
-and is reported only as a runtime error, once it is too late. An encoder therefore **MUST** be
-able to split a single write across a flush; it may not require any write to land contiguously
-in the buffer.
+**Where a flush boundary may fall (normative).** The byte sequence an encoder produces is a
+concatenation of **atomic units** and **divisible runs**.
+
+Atomic: a field header varint (§4.3), a `fixlen_word` (§4.6), an `element_count` varint
+(§4.7–4.8), the varint of an integer scalar or of one integer array element (§4.4–4.5,
+§4.7), and one `fp32`/`fp64` element (§4.6, §4.8).
+
+Divisible: the **payload byte run** of a `string` or `blob` (§4.6), at any byte boundary.
+
+A flush boundary **MAY** fall between two atomic units and anywhere inside a divisible run.
+An encoder **MUST** be able to split a divisible run across a flush — a field without a
+schema `maxlen` can exceed any buffer, so no minimum removes that path. It **MAY** require
+that each atomic unit lands contiguously.
+
+The rule is stated over the **produced bytes**, not over the caller's data: a target whose
+native string is UTF-16 emits a payload run that its input never was, and it is the run in
+the buffer that a flush divides.
+
+**`MIN_OUTPUT_BUFFER` (normative).** A corelib **MUST** expose a documented constant — the
+smallest buffer it accepts **for streaming**:
+
+* A port that splits atomic units too declares **`1`**.
+* A port that requires atomic units to land contiguously declares the largest run it
+  reserves as one piece. The derived floor is **10 bytes**, a 64-bit varint at
+  `ceil(64/7)`; a port that reserves a header together with its value declares that sum.
+* A declaration **MUST NOT** exceed **20** — a header varint and its value, `2 × 10`. That
+  is the largest reservation any port makes, and it is also the smallest message a schema
+  can bound: a single scalar field is at most a header plus a value. A ceiling above it
+  would let a port demand more than a whole message can occupy. Reserving further ahead —
+  a field's metadata as a group, or a batch of array elements — **MUST** be handled by
+  flushing, not by raising the declaration.
+
+**The minimum binds a buffer installed with a flush sink**, at installation and at every
+mid-stream buffer-set. Such a buffer **MUST** satisfy `buflen - offset >=
+MIN_OUTPUT_BUFFER` and is rejected **where it is handed over**, by the same mechanism the
+port uses for an out-of-range offset (an exception, or an error status), never partway
+through a message. Any buffer at or above it **MUST** work and **MUST** produce output
+byte-identical to the one-shot path.
+
+**A buffer installed without a sink is subject to no minimum.** No flush can occur, so no
+atomic unit can be split and the constant has nothing to say: the buffer either holds the
+message or reports buffer-full. This is the case a caller sizes from the generated
+`MAX_SIZE` (§6.1.1), and it stays exact — a message that encodes to two bytes may be
+encoded into a two-byte buffer on any port, whatever that port declares.
+
+This is what §5.1 previously secured by fixing the floor at one byte for every port: a
+caller writing portable code must be able to **discover** the size that works, rather than
+find out at runtime once it is too late. A declared constant serves that directly — the
+caller sizes its buffer from a value the API gives it — and confining it to the streaming
+case keeps it from imposing a floor on the one-shot path, where no flush can occur and no
+floor is needed.
+
+**Declaring `1` stays fully conformant, and is the right choice for a footprint profile.**
+Byte-granular encoding is what the wire format was designed around, and on a target that
+streams through a scratch buffer measured in tens of bytes the byte-at-a-time path costs
+less than the RAM a larger buffer would. A port that declares `1` imposes no requirement on
+its caller at all. Note the direction: here the **constrained** profile is the strict one
+and the max-speed profile takes the allowance — the reverse of `FIXLEN_MAX`/`ARRAY_MAX`
+(§6.2) and `SOFAB_STRICT_UTF8` (§6.4). Unlike those, this allowance changes nothing on the
+wire — the bytes are identical either way, and only an API precondition differs.
 
 Required capabilities:
 
-* Accept a fixed output buffer together with a flush callback, or connect to a
-  language-idiomatic stream/writer sink — whichever pattern the language prefers.
-* Support an optional start offset so the encoder can leave space at the front of
-  the buffer for a framing header before its first byte.
-* Allow a new output buffer to be installed mid-stream (typically inside the flush
-  callback) so encoding continues without interruption or data loss.
+* Accept a **caller-supplied output buffer** — pointer/slice, length, and start offset —
+  **without** a flush sink: the offset leaves room at the front for a framing header, and a
+  buffer that fills reports buffer-full rather than overflowing.
+* Accept the same caller-supplied buffer **together with** a flush callback, or connected to
+  a language-idiomatic stream/writer sink — whichever pattern the language prefers.
+* Allow a new output buffer to be installed mid-stream, under the handover contract below.
 * Expose an explicit flush to drain any remaining buffered bytes at the end.
-* Return a status/error code on every write operation; if the buffer fills with no
-  flush registered, report buffer-full rather than overflowing.
+* Return a status/error code on every write operation.
+
+A corelib **MUST NOT**:
+
+* **allocate an output buffer.** Every buffer the encoder writes into is caller-supplied.
+  There is one buffer-ownership model rather than two, and a heap-less profile is not a
+  special case of it but the plain reading.
+* **grow or reallocate** a buffer the caller supplied; what was handed over is what gets
+  written;
+* return **partial output as if it were complete** — an encoder that could not write what
+  it was asked to write reports it, and a one-shot helper that ignores that report is
+  non-conformant.
+
+**The generated-object layer allocates; the corelib does not (normative).** §6.1.1 requires
+a one-shot `encode()` that hands back the message as bytes, and that storage has to come
+from somewhere. It comes from the generated code, which — unlike the corelib — knows the
+schema: it allocates, then drives the corelib over a buffer it supplies like any other
+caller. Two shapes are conformant, and the generator already emits both:
+
+* **Bounded schema** — allocate `MAX_SIZE`, install it **without** a sink, encode in one
+  pass. The worst case is derived from the schema and cannot be exceeded, so no flush can
+  occur and no minimum applies.
+* **Unbounded schema** — `MAX_SIZE` is then a configured ceiling, not a size the message
+  cannot reach, and sizing from it would truncate a larger message. Install a scratch
+  buffer **with** a flush sink that appends into the growing result instead; the ceiling
+  never binds an encode, and the scratch is subject to `MIN_OUTPUT_BUFFER` like any other
+  sink-installed buffer.
+
+On a heap-less profile only the bounded shape exists, which is why MESSAGE_SPEC §7.2 already
+requires a schema intended for one to declare its bounds.
 
 **What a returning flush callback leaves behind (normative).** A sink may either **copy**
 the bytes it was handed or **take** the buffer — pass it to a transport, queue it for an
@@ -1265,11 +1345,20 @@ the language's idiomatic convention — `tests/` in Rust and Python,
    recovered fields/values match `fields`.
 3. **Roundtrip tests** — encode → decode → compare for representative messages.
 4. **Chunked-streaming tests** — the defining requirement:
-   * **Encode** into a buffer **one byte long**, driving the flush callback / sink
-     repeatedly; assert the concatenated output is byte-identical to the one-shot output.
-     One byte rather than merely "smaller than the message" for the same reason the decode
-     bullet below says one byte at a time: it is the size that proves no write needs to land
-     contiguously (§5.1).
+   * **Encode** into a buffer of exactly **`MIN_OUTPUT_BUFFER`** bytes, driving the flush
+     callback / sink repeatedly; assert the concatenated output is byte-identical to the
+     one-shot output. The port's own declared minimum rather than merely "smaller than the
+     message": it is the size that proves the constant is real, and for a port declaring `1`
+     it is the same test as before — no write needs to land contiguously (§5.1). Cover a
+     `string` or `blob` payload longer than the buffer, so the divisible-run path is
+     exercised whatever the declared value is.
+   * **Reject a buffer below the minimum** — install one **with a flush sink**, with
+     `buflen - offset` one byte short of `MIN_OUTPUT_BUFFER`, and assert it fails **there**,
+     by the port's own out-of-range mechanism, rather than partway through a message (§5.1).
+     A port declaring `1` tests the zero-length buffer. Pair it with the converse: the same
+     undersized buffer **without** a sink is accepted, and a message that fits encodes into
+     it — the minimum is a streaming constant and must not become a floor on the one-shot
+     path.
    * **Encode across a taking sink** — a flush callback that installs a *different* buffer
      on every call, scrubbing the one it was handed before returning; assert the
      concatenated output still equals the one-shot output. This is the zero-copy handover
@@ -1411,7 +1500,10 @@ this into an API listing.
 
 * **Output buffer (encoding)** — who owns the buffer written into, whether the
   library allocates or grows it, and what happens when it fills (flush sink /
-  reuse vs. a buffer-full error).
+  reuse vs. a buffer-full error). State the port's **`MIN_OUTPUT_BUFFER`** (§5.1)
+  here, and that it applies to a buffer installed with a sink: it is the number a
+  caller needs before it can size a streaming buffer, and this is the section they
+  read to find out who allocates what.
 * **Input buffer (decoding)** — who owns the bytes being parsed and how long they must
   outlive the call. For the **one-shot** `decode(buffer)` this is where a port states
   whether decoded `string`/`blob` values are zero-copy views into the caller's buffer
@@ -1634,7 +1726,12 @@ A new `corelib-<lang>` is conformant when:
       `begin_lazy` / `end` / `end_keep` framing API (§6). Held-back headers never make
       the bytes depend on the output-buffer size.
 - [ ] **Streaming encode** into a smaller-than-message buffer via flush callback /
-      sink, with mid-stream buffer swap (§5.1).
+      sink, with mid-stream buffer swap (§5.1), over a **caller-supplied** buffer with a
+      start offset — the corelib allocates no output buffer at all; the generated layer
+      does, and hands one in like any other caller (§5.1).
+- [ ] **`MIN_OUTPUT_BUFFER` declared** (§5.1), at most 20, stated in the README's memory
+      section (§9.6), enforced on every buffer installed **with a sink** and on no other,
+      and used as the size in the §7.2 item 4 encode test.
 - [ ] **Streaming decode** via `feed` of arbitrarily small chunks, push-callback /
       pull-read, lazy field binding, and auto-skip (§5.2), returning the three-valued
       `COMPLETE` / `INCOMPLETE` / `INVALID` outcome with **no** `finish`/`finalize` step —
