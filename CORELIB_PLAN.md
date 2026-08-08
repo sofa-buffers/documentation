@@ -497,6 +497,35 @@ Required capabilities:
 * Return a status/error code on every write operation; if the buffer fills with no
   flush registered, report buffer-full rather than overflowing.
 
+**What a returning flush callback leaves behind (normative).** A sink may either **copy**
+the bytes it was handed or **take** the buffer — pass it to a transport, queue it for an
+asynchronous write, hand it to DMA — and the encoder cannot tell the two apart. The
+contract therefore rests on what the callback does before it returns:
+
+* Returning **without** installing a buffer means the sink **copied**. The active buffer
+  stays active and the encoder resumes writing into it at offset **0**.
+* A sink that **takes** the buffer **MUST** install a replacement before returning, using
+  the mid-stream buffer-set operation above. It **MUST NOT** return without one: the
+  encoder would keep writing into storage the transport now owns.
+
+**The start offset belongs to the installation, not to the buffer.** Each buffer-set call
+begins a new installation and its cursor starts at *that call's* offset; the offset is then
+consumed, so any later flush that the callback returns from without installing anything
+resumes at 0. Passing the **same** buffer to buffer-set is a new installation like any
+other — that is how a sink gets fresh header room in **every** flushed unit, one framing
+header per packet: `buffer_set(buf, len, offset)` re-arms the reservation, where a bare
+return would not.
+
+Both the copy-and-continue and the take-and-replace shapes are therefore expressible, and
+which one is in effect is stated by the callback rather than inferred by the encoder.
+
+*(Rationale: the zero-copy path is the reason the buffer-set operation exists — encode
+straight into the packet, hand the packet on, encode the next into another. That path is
+only safe if "returned without installing a buffer" has exactly one meaning. Reading it as
+"the sink is done, reuse the storage" is the safe default for a copying sink and is what a
+taking sink must override; reading it the other way round would make the dangerous case
+the implicit one.)*
+
 See §6 for the full list of write operations (typed scalars, arrays, sequence framing).
 
 ### 5.2 Streaming Deserialization (Decoder)
@@ -1241,6 +1270,13 @@ the language's idiomatic convention — `tests/` in Rust and Python,
      One byte rather than merely "smaller than the message" for the same reason the decode
      bullet below says one byte at a time: it is the size that proves no write needs to land
      contiguously (§5.1).
+   * **Encode across a taking sink** — a flush callback that installs a *different* buffer
+     on every call, scrubbing the one it was handed before returning; assert the
+     concatenated output still equals the one-shot output. This is the zero-copy handover
+     of §5.1: an encoder that kept writing into the buffer it gave away reads back the fill
+     pattern, and the one-byte test above would not notice, since that sink copies and
+     returns. Pair it with a **copying** sink that returns without installing anything and
+     assert the same output, so both halves of the returning-callback contract are covered.
    * **Decode** by feeding the input **one byte at a time** (and in odd-sized chunks);
      assert the result is identical to feeding it all at once. This proves the state
      machine suspends/resumes at any byte boundary.
