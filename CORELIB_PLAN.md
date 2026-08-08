@@ -550,18 +550,32 @@ Required capabilities:
 
 A corelib **MUST NOT**:
 
-* offer a self-allocating stream as its **only** entry point — the caller-supplied form
-  above is required, and a heap-less profile has no other;
+* **allocate an output buffer.** Every buffer the encoder writes into is caller-supplied.
+  There is one buffer-ownership model rather than two, and a heap-less profile is not a
+  special case of it but the plain reading.
 * **grow or reallocate** a buffer the caller supplied; what was handed over is what gets
   written;
 * return **partial output as if it were complete** — an encoder that could not write what
   it was asked to write reports it, and a one-shot helper that ignores that report is
   non-conformant.
 
-A corelib **MAY** additionally offer a self-allocating, growable stream as a convenience for
-targets that allocate. It **MUST** produce identical bytes and **MUST** be documented as the
-convenience form; the generated-object layer's one-shot `encode()` (§6.1.1) is built on it or
-on a buffer sized to the schema's worst case.
+**The generated-object layer allocates; the corelib does not (normative).** §6.1.1 requires
+a one-shot `encode()` that hands back the message as bytes, and that storage has to come
+from somewhere. It comes from the generated code, which — unlike the corelib — knows the
+schema: it allocates, then drives the corelib over a buffer it supplies like any other
+caller. Two shapes are conformant, and the generator already emits both:
+
+* **Bounded schema** — allocate `MAX_SIZE`, install it **without** a sink, encode in one
+  pass. The worst case is derived from the schema and cannot be exceeded, so no flush can
+  occur and no minimum applies.
+* **Unbounded schema** — `MAX_SIZE` is then a configured ceiling, not a size the message
+  cannot reach, and sizing from it would truncate a larger message. Install a scratch
+  buffer **with** a flush sink that appends into the growing result instead; the ceiling
+  never binds an encode, and the scratch is subject to `MIN_OUTPUT_BUFFER` like any other
+  sink-installed buffer.
+
+On a heap-less profile only the bounded shape exists, which is why MESSAGE_SPEC §7.2 already
+requires a schema intended for one to declare its bounds.
 
 **What a returning flush callback leaves behind (normative).** A sink may either **copy**
 the bytes it was handed or **take** the buffer — pass it to a transport, queue it for an
@@ -1713,8 +1727,8 @@ A new `corelib-<lang>` is conformant when:
       the bytes depend on the output-buffer size.
 - [ ] **Streaming encode** into a smaller-than-message buffer via flush callback /
       sink, with mid-stream buffer swap (§5.1), over a **caller-supplied** buffer with a
-      start offset — self-allocation, if offered at all, is the convenience form and not
-      the only entry point.
+      start offset — the corelib allocates no output buffer at all; the generated layer
+      does, and hands one in like any other caller (§5.1).
 - [ ] **`MIN_OUTPUT_BUFFER` declared** (§5.1), at most 20, stated in the README's memory
       section (§9.6), enforced on every buffer installed **with a sink** and on no other,
       and used as the size in the §7.2 item 4 encode test.
