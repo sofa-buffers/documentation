@@ -19,7 +19,7 @@ incomplete.
 
 ## Datasets (identical field ids, types and values in every language)
 
-Two messages, one array workload and one streaming workload. The exact bytes must
+Three messages, one array workload and one streaming workload. The exact bytes must
 match, so use the literal values below (do **not** substitute language math
 constants like `PI`/`E` — that changes the encoded bytes and breaks comparison).
 
@@ -133,6 +133,65 @@ pays, and I/O is not deterministic under Callgrind. Do the minimum the language
 needs to keep the call from being optimised away — accumulating an XOR of one byte
 per call, say — and nothing more.
 
+**Read these rows against each other, not against the other workloads.** Five bytes
+of this message are metadata and a million are payload, so the throughput figure is
+the platform's `memcpy` and the machine's memory bandwidth — it is not a statement
+about the corelib and does not belong next to `typical message` in a "how fast is
+this port" reading. The signal lives in the **differences**: one-shot to streaming
+is the flush machinery, streaming to pass-through is what the §5.1 permission buys.
+Under `MB/s` the first of those is a low-single-digit fraction of a bandwidth-bound
+row and will not survive the noise; under Callgrind `Ir/op` it is a clean double-digit
+fraction, because instruction counts do not care about bandwidth. **`Ir/op` is the
+number to read for this workload.**
+
+### `composite` message (used by `bench`)
+
+The three datasets above are flat: every field is present, every array is a compact
+scalar array, the one sequence is a single level deep, and every id fits a one-byte
+header. Several encoder paths therefore never run at all — and they are not obscure
+ones.
+
+This message exercises them. Field ids and values:
+
+| id | type | value |
+|----|------|-------|
+| 1 | **string array** (wrapper form, §5.1) | 64 elements, element *i* = `"item-"` + *i* in decimal, no padding (`item-0` … `item-63`) |
+| 2 | string | `"aä€𝄞"` repeated **32** times — 320 UTF-8 bytes covering 1-, 2-, 3- and 4-byte sequences |
+| 3 | sequence | `{ 1: sequence { 1: sequence { 1: unsigned 7 } }, 2: signed -1 }` |
+| 4 | struct | **equal to its declared default**, so the encoder omits it (§2) |
+| 130 | unsigned | `0xDEADBEEF` |
+
+What each one is there for:
+
+* **Field 1** is the only wrapper array in the suite — the form that carries a
+  header *per element* (§5.1). Its 64 elements also straddle the one-byte header
+  boundary on their own: element ids 0–15 encode as one byte, 16–63 as two.
+* **Field 2** puts the §6.4 UTF-8 validator on a payload that is not ASCII. The
+  4-byte sequence matters on its own: it is a surrogate pair in every UTF-16 port.
+* **Field 3** is nesting at depth 3, so the lazy hold-back run (§6) grows past the
+  single level `typical` and `perf` reach.
+* **Field 4** is the only field in the suite the encoder is required to **not**
+  write. Without it the ≠-default test never takes its omit branch, and neither does
+  the hold-back's discard path.
+* **Field 130** is the only two-byte field header in the suite: `(130 << 3) | 0`.
+
+The exact encoded size is the parity check, as with `perf`'s 170; take it from the
+reference implementation (§ *Reference implementation* below) once the workload
+lands there, and it must then match on every port.
+
+**Three rows, one of which is the point:**
+
+| row | how it is driven |
+|-----|------------------|
+| `encode: composite` | buffer sized to hold the message, no sink |
+| `decode: composite` | whole message, all fields read |
+| `decode: composite skip-all` | same bytes, **every** field and sub-sequence skipped |
+
+The skip row measures the path a router or filter runs in production — walk the
+message, materialize nothing — and §7.2 item 7 requires it be *tested* while nothing
+so far measured it. Its distance from `decode: composite` is what not-decoding is
+worth.
+
 ## Timing
 
 - Measure over a **~1 s process/thread CPU-time loop**, never wall-clock. Use the
@@ -150,7 +209,7 @@ per call, say — and nothing more.
 
 The harness matches these with the regexes
 `=== SofaBuffers (.+?) throughput` / `=== SofaBuffers (.+?) per-op`, throughput
-rows `^(encode|decode):\s+(u64 array \(1000\)|typical message|blob 1MB one-shot|blob 1MB streaming|blob 1MB passthrough|blob 1MB)\s+([\d.]+)$`,
+rows `^(encode|decode):\s+(u64 array \(1000\)|typical message|blob 1MB one-shot|blob 1MB streaming|blob 1MB passthrough|blob 1MB|composite skip-all|composite)\s+([\d.]+)$`,
 (the `passthrough` row is optional — see the dataset above — so the harness must
 tolerate its absence rather than treat a missing row as a parse failure),
 per-op markers containing `perf: serialize`/`perf: deserialize`, and value lines
@@ -167,9 +226,12 @@ encode: typical message          <v>
 encode: blob 1MB one-shot        <v>
 encode: blob 1MB streaming       <v>
 encode: blob 1MB passthrough     <v>
+encode: composite                <v>
 decode: u64 array (1000)         <v>
 decode: typical message          <v>
 decode: blob 1MB                 <v>
+decode: composite                <v>
+decode: composite skip-all       <v>
 
 MB = 1e6 bytes. ~1s CPU-time loop per workload.
 ```
@@ -223,9 +285,12 @@ encode: typical message              <n>         <bytes>
 encode: blob 1MB one-shot            <n>         1000005
 encode: blob 1MB streaming           <n>         1000005
 encode: blob 1MB passthrough         <n>         1000005   (optional)
+encode: composite                    <n>         <bytes>
 decode: u64 array (1000)             <n>         <bytes>
 decode: typical message              <n>         <bytes>
 decode: blob 1MB                     <n>         1000005
+decode: composite                    <n>         <bytes>
+decode: composite skip-all           <n>         <bytes>
 ```
 
 The `blob 1MB` rows are where the instruction count earns its keep: the delta
