@@ -613,10 +613,6 @@ bytes the caller supplied. An encoder **MAY** therefore hand such a run to the s
 
 * **The caller has granted it** when installing the sink. Pass-through is **off by
   default**: a sink that was not told it may receive foreign memory never does.
-* **The installation's start offset is zero.** A non-zero offset means the sink reserves
-  room in front of every unit it is handed — a framing header per packet — and a run
-  arriving from elsewhere has no such room. Pass-through is unavailable for that
-  installation whatever the caller granted.
 * **Buffered bytes are drained first**, so what the sink receives stays in wire order.
 * **Only a divisible run qualifies.** Everything atomic (§ above) is produced by the
   encoder and exists nowhere else to hand over.
@@ -640,11 +636,16 @@ replacement" would apply it to both, retaining memory it only borrowed. No rule 
 the *sink's* intent can prevent that, so the two behaviours are separated where they are
 declared instead, at installation.
 
-This costs nothing, because the exclusion falls along the same line as the offset rule
-above: a sink that takes buffers is a zero-copy transport, which cannot use a passed-through
-run anyway, and a sink that wants pass-through accumulates or forwards and never takes. The
-offset rule alone does not cover it — a double-buffering sink with no framing header has
-offset zero — which is why this is stated separately.
+This costs nothing, because it separates two populations that never wanted the same thing:
+a sink that takes buffers is a zero-copy transport, which cannot use a passed-through run
+anyway, and a sink that wants pass-through forwards or accumulates and never takes.
+
+It is also what makes a **start offset** a non-issue here. A sink that wants header room in
+every unit it is handed — one framing header per packet — has to re-establish the
+reservation on each flush by installing a buffer (§ above: the offset belongs to the
+installation and is consumed once), and installing is exactly what this rule forbids it. A
+non-zero offset on its own reserves room in the *first* unit and says nothing about later
+ones, so it neither implies the per-packet pattern nor conflicts with pass-through.
 
 A port **MAY** ignore the permission entirely and always copy. That is conformant — the
 output is byte-identical either way, and the permission is an invitation, not an
@@ -1421,11 +1422,9 @@ the language's idiomatic convention — `tests/` in Rust and Python,
    * **No foreign memory without permission** — encode a `blob` several times the buffer
      size through a sink that was **not** granted pass-through, and assert every callback
      argument lies within the installed buffer (compare identity, or that the pointer falls
-     inside it). Repeat with a non-zero start offset and the permission **granted**, and
-     assert the same: an offset reserves header room in every unit, so pass-through is
-     unavailable there regardless (§5.1). A port that never passes through passes both by
-     construction; a port that does has exactly two places to get the condition wrong, and
-     these are them. Assert also that a sink granted pass-through which calls the
+     inside it). A port that never passes through passes by construction; a port that does
+     has one place to get the condition wrong, and this is it.
+     Assert also that a sink granted pass-through which calls the
      buffer-set operation is **rejected** — the two are mutually exclusive (§5.1).
    * **Decode** by feeding the input **one byte at a time** (and in odd-sized chunks);
      assert the result is identical to feeding it all at once. This proves the state
