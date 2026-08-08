@@ -84,22 +84,47 @@ Encoded size is **1,000,005 bytes** on every implementation — a 1-byte header
 (`(1 << 3) | 2`), a 4-byte `fixlen_word` (`(1000000 << 3) | 3`), and the payload.
 Like the `perf` message's 170, it is a parity check.
 
-**Three rows, and the interesting number is the gap between the first two:**
+**Three required rows, and the interesting number is the gap between the first two:**
 
 | row | how it is driven |
 |-----|------------------|
-| `encode: blob 1MB one-shot` | buffer sized to hold the whole message, **no sink** |
-| `encode: blob 1MB streaming` | caller buffer of exactly **4096** bytes with a flush sink |
+| `encode: blob 1MB one-shot` | caller buffer of **1,000,005** bytes, **no sink** |
+| `encode: blob 1MB streaming` | caller buffer of exactly **4096** bytes with a flush sink, pass-through **not granted** |
 | `decode: blob 1MB` | fed in **4096**-byte chunks |
 
 The one-shot row is the floor — one contiguous write, no flush logic. The streaming
 row is the same bytes through ~245 flushes. Their difference is the cost of the
-divisible-run path (§5.1), per port, and it is the only place in this suite where
-that path is exercised at all: the other three workloads are schema-bounded and
-small enough that no flush occurs mid-encode.
+divisible-run path (CORELIB_PLAN §5.1), per port, and it is the only place in this
+suite where that path is exercised at all: the other three workloads are
+schema-bounded and small enough that no flush occurs mid-encode.
 
 A fixed 4096 rather than each port's own buffer size, so the rows stay comparable
-across languages.
+across languages. `MIN_OUTPUT_BUFFER` does not enter into it — it is at most 20, so
+4096 always satisfies it, and whether the declared minimum *works* is a conformance
+question settled by CORELIB_PLAN §7.2 item 4, not a throughput one.
+
+The one-shot buffer is sized **by hand**, not from the generated `MAX_SIZE`. This
+schema is unbounded, so its `MAX_SIZE` is the configured ceiling (4096 by default)
+rather than a size the message cannot exceed — the bench drives the corelib
+directly and states the number outright.
+
+**Pass-through is not granted for the required streaming row.** Since CORELIB_PLAN
+§5.1 lets a caller permit a `string`/`blob` run to reach the sink without passing
+through the buffer, leaving the permission unstated would have two ports print the
+same row for entirely different work — one copying a megabyte in 4096-byte pieces,
+the other handing it over in one call. The required row therefore measures the copy
+path on every port.
+
+A port that **implements** pass-through **SHOULD** additionally print:
+
+```
+encode: blob 1MB passthrough     <v>
+```
+
+driven identically to the streaming row but with the permission granted. Its gap to
+the streaming row is what pass-through is worth on that port. The row is **optional**
+— a port that does not implement pass-through omits it entirely rather than printing
+a placeholder, and the harness treats it as absent-or-present per port.
 
 **The streaming sink consumes and discards.** It **MUST NOT** accumulate the bytes,
 and **MUST NOT** write to a socket or file. Both would measure something other than
@@ -125,7 +150,9 @@ per call, say — and nothing more.
 
 The harness matches these with the regexes
 `=== SofaBuffers (.+?) throughput` / `=== SofaBuffers (.+?) per-op`, throughput
-rows `^(encode|decode):\s+(u64 array \(1000\)|typical message|blob 1MB one-shot|blob 1MB streaming|blob 1MB)\s+([\d.]+)$`,
+rows `^(encode|decode):\s+(u64 array \(1000\)|typical message|blob 1MB one-shot|blob 1MB streaming|blob 1MB passthrough|blob 1MB)\s+([\d.]+)$`,
+(the `passthrough` row is optional — see the dataset above — so the harness must
+tolerate its absence rather than treat a missing row as a parse failure),
 per-op markers containing `perf: serialize`/`perf: deserialize`, and value lines
 `cycles/op : <n>` / `CPU time/op : <n> ns`. The captured `<Label>` (e.g. `Rust`,
 `C++`, `Go`) selects the display name, so keep it short and stable.
@@ -139,6 +166,7 @@ encode: u64 array (1000)         <v>
 encode: typical message          <v>
 encode: blob 1MB one-shot        <v>
 encode: blob 1MB streaming       <v>
+encode: blob 1MB passthrough     <v>
 decode: u64 array (1000)         <v>
 decode: typical message          <v>
 decode: blob 1MB                 <v>
@@ -146,7 +174,9 @@ decode: blob 1MB                 <v>
 MB = 1e6 bytes. ~1s CPU-time loop per workload.
 ```
 Rows use a label left-justified to 26 chars and the value right-justified to 12
-chars with 2 decimals.
+chars with 2 decimals. The `blob 1MB passthrough` row is the one optional line: a
+port that does not implement pass-through omits it, and prints no placeholder in
+its place.
 
 ### Per-op (`perf`)
 ```
@@ -192,6 +222,7 @@ encode: u64 array (1000)             <n>         <bytes>
 encode: typical message              <n>         <bytes>
 encode: blob 1MB one-shot            <n>         1000005
 encode: blob 1MB streaming           <n>         1000005
+encode: blob 1MB passthrough         <n>         1000005   (optional)
 decode: u64 array (1000)             <n>         <bytes>
 decode: typical message              <n>         <bytes>
 decode: blob 1MB                     <n>         1000005
@@ -199,7 +230,9 @@ decode: blob 1MB                     <n>         1000005
 
 The `blob 1MB` rows are where the instruction count earns its keep: the delta
 between one-shot and streaming is the divisible-run cost with the host's memory
-subsystem and scheduler taken out of it. Ports using **two-rep subtraction** should
+subsystem and scheduler taken out of it, and — where the optional third row is
+present — the gap from streaming to pass-through is what CORELIB_PLAN §5.1's
+permission buys, measured the same deterministic way. Ports using **two-rep subtraction** should
 keep the rep counts small for this workload (`R1 = 1`, `R2 = 3` is enough) — a
 megabyte of copying per op under Callgrind is slow, and the subtraction cancels
 fixed cost just as well at three reps as at three hundred.
