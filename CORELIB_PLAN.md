@@ -606,16 +606,29 @@ only safe if "returned without installing a buffer" has exactly one meaning. Rea
 taking sink must override; reading it the other way round would make the dangerous case
 the implicit one.)*
 
-**Pass-through of a divisible run (normative, optional).** A `string` or `blob` payload is
-the one thing an encoder writes that it does not *produce* — the bytes on the wire are the
-bytes the caller supplied. An encoder **MAY** therefore hand such a run to the sink
-**directly**, instead of copying it through the output buffer, under all of the following:
+**Pass-through of a divisible run (normative, optional).** A `string` or `blob` payload can
+be the one thing an encoder writes that it does not *produce*: where the wire bytes already
+exist as the caller supplied them, copying them through the output buffer only to hand them
+onward is a wasted pass over the payload. An encoder **MAY** therefore hand such a run to
+the sink **directly**, under all of the following:
 
 * **The caller has granted it** when installing the sink. Pass-through is **off by
   default**: a sink that was not told it may receive foreign memory never does.
 * **Buffered bytes are drained first**, so what the sink receives stays in wire order.
-* **Only a divisible run qualifies.** Everything atomic (§ above) is produced by the
-  encoder and exists nowhere else to hand over.
+* **The run is divisible.** Everything atomic (§ above) is produced by the encoder and
+  exists nowhere else to hand over.
+* **The run's wire bytes already exist**, contiguously, as memory the caller supplied.
+  Divisibility says where a flush *may* fall; this says whether there is anything to hand
+  over at all, and the two are not the same test.
+
+A `blob` always satisfies the last condition — it is bytes on both sides. A `string`
+satisfies it only where the port's string type already holds the UTF-8 payload (Go, Rust) or
+its API takes the bytes directly (C, C++, Zig); ASCII content needs no special case, being
+UTF-8 already. Where the payload has to be **transcoded** into existence — from UTF-16, as
+in C#, Dart, TypeScript and Java — the wire bytes do not exist until the encoder produces
+them, so there is nothing to pass through and the run is copied like any other. That is a
+property of how the port stores strings, not of the string's content: an all-ASCII UTF-16
+string still has to change width.
 
 **Passed-through memory is borrowed for the duration of the call.** The sink **MUST NOT**
 retain it, and such a call is **not** a buffer handover: the take-and-replace contract
