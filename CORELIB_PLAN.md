@@ -627,6 +627,25 @@ above does not apply to it, installing a replacement in response to one is meani
 the encoder's active buffer is unchanged by it. This mirrors the input side, where a fed
 chunk is likewise borrowed only for the duration of `feed` (§6).
 
+**Pass-through and taking the buffer are mutually exclusive (normative).** A sink granted
+pass-through **MUST NOT** call the buffer-set operation, and a port **SHOULD** reject such
+a call as it rejects an undersized buffer. Granting the permission *is* the promise never
+to take a buffer.
+
+The exclusion is needed because **the sink cannot tell the two calls apart.** A
+passed-through run is preceded by a flush of the buffered bytes, so the sink is invoked
+twice in a row with what looks like the same kind of argument — first the output buffer,
+then foreign memory — and a sink whose policy is "take what I am handed, install a
+replacement" would apply it to both, retaining memory it only borrowed. No rule stated over
+the *sink's* intent can prevent that, so the two behaviours are separated where they are
+declared instead, at installation.
+
+This costs nothing, because the exclusion falls along the same line as the offset rule
+above: a sink that takes buffers is a zero-copy transport, which cannot use a passed-through
+run anyway, and a sink that wants pass-through accumulates or forwards and never takes. The
+offset rule alone does not cover it — a double-buffering sink with no framing header has
+offset zero — which is why this is stated separately.
+
 A port **MAY** ignore the permission entirely and always copy. That is conformant — the
 output is byte-identical either way, and the permission is an invitation, not an
 obligation. Ports for constrained targets are expected to ignore it.
@@ -1406,7 +1425,8 @@ the language's idiomatic convention — `tests/` in Rust and Python,
      assert the same: an offset reserves header room in every unit, so pass-through is
      unavailable there regardless (§5.1). A port that never passes through passes both by
      construction; a port that does has exactly two places to get the condition wrong, and
-     these are them.
+     these are them. Assert also that a sink granted pass-through which calls the
+     buffer-set operation is **rejected** — the two are mutually exclusive (§5.1).
    * **Decode** by feeding the input **one byte at a time** (and in odd-sized chunks);
      assert the result is identical to feeding it all at once. This proves the state
      machine suspends/resumes at any byte boundary.
