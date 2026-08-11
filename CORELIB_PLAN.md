@@ -552,7 +552,8 @@ A corelib **MUST NOT**:
 
 * **allocate an output buffer.** Every buffer the encoder writes into is caller-supplied.
   There is one buffer-ownership model rather than two, and a heap-less profile is not a
-  special case of it but the plain reading.
+  special case of it but the plain reading. This is the encode half of **§6.6**, which
+  forbids the corelib the heap on *both* sides.
 * **grow or reallocate** a buffer the caller supplied; what was handed over is what gets
   written;
 * return **partial output as if it were complete** — an encoder that could not write what
@@ -773,19 +774,29 @@ this status through verbatim — MESSAGE_SPEC §7.)
 A new implementation **should use the best idiomatic pattern for its language** as long
 as the wire bytes and the streaming guarantees are preserved. Proven mappings:
 
-* **Visitor pattern *(preferred for object-capable languages)*:** the decoder calls
-  typed visitor methods on a user-supplied object. Pull-reading becomes "the visitor
+* **Visitor pattern *(REQUIRED for object-capable languages — normative)*:** the decoder
+  calls typed visitor methods on a user-supplied object. Pull-reading becomes "the visitor
   writes the decoded value into one of the object's own members and chooses to skip
-  anything it does not recognise". This is the **recommended choice** for any language
-  that supports objects, classes, or structs, because the primary consumer of this
-  library is *generated code* — objects or classes whose members directly mirror the
-  schema fields. Those objects already exist at decode time; the visitor pattern lets
-  the decoder write each field straight into the waiting member without an intermediate
-  representation.
+  anything it does not recognise". A port for a language with objects, classes or structs
+  **MUST** expose this surface, because the primary consumer of this library is *generated
+  code* — objects or classes whose members directly mirror the schema fields. Those objects
+  already exist at decode time; the visitor pattern lets the decoder write each field
+  straight into the waiting member without an intermediate representation.
+
+  It is required rather than recommended for the reason §6.6 exists: a decoder that writes
+  into a member the caller already owns needs no storage of its own, so the visitor surface
+  is what makes "the corelib allocates nothing" reachable on the decode side. A port whose
+  only decode surface hands back values it materialized has to allocate them somewhere.
+
+  **Exempt:** languages without objects (C is the standing example — it uses callbacks with
+  a context pointer, which is the same shape without the type), and **embedded-friendly**
+  ports, which may prefer a pull/cursor surface to avoid indirect calls and keep the
+  control flow inspectable. Both still obey §6.6; the exemption is about the *shape* of the
+  surface, never about who owns the memory.
 * **Pull-parser / iterator:** expose an iterator or `next()`-style API that yields
-  field events; the caller pulls fields and reads or skips them. A reasonable
-  alternative for languages or use-cases where a pre-existing target object is not
-  available.
+  field events; the caller pulls fields and reads or skips them. Required only where the
+  visitor surface is exempt above; elsewhere it is a welcome **addition** to the visitor
+  surface — for callers with no pre-existing target object — never a replacement for it.
 * **Flush callback / writer sink:** for the encoder, model the flush as a closure,
   a stream/writer sink, or an iterator of byte chunks — whichever the language prefers.
 * **Heap-free / no-alloc build** where the language can target embedded or bare-metal
@@ -1374,6 +1385,85 @@ position, across decode → re-encode **and** any materialized walk, on **every*
 decode surface. The SofaBuffers differential harness (Crucible) additionally
 checks that all language drivers agree bit-for-bit on every `fp32` NaN.
 
+### 6.6 Memory: the corelib allocates nothing (normative)
+
+**A corelib MUST NOT allocate, reallocate or free heap memory — on either side, on any
+path.** No `malloc`/`realloc`/`free`, no `new`/`delete`, no allocator call, no growable
+container it owns, no hidden scratch it sizes at run time. Every byte it reads, writes or
+reports on lives in memory the **caller** supplied and the **caller** owns:
+
+* the **output buffer** on encode (§5.1) and every replacement installed mid-stream;
+* the **input bytes** on decode — the one-shot buffer, or each fed chunk;
+* the **destination** a decoded field lands in: the corelib copies into storage the
+  caller (or the generated layer standing in for it) handed over, and never materializes
+  a value into storage of its own.
+
+This is the same sentence §5.1 already makes about the output buffer, extended to the
+whole library. It buys three things that were previously argued port by port: a firmware
+target and a server target run the *same* code rather than two profiles of it; a caller can
+bound a decode's memory by construction instead of by measurement; and "who frees this"
+stops being a question a port answers in its README.
+
+**The generated layer allocates; the corelib does not.** §5.1 already states this for
+encode, and it reads identically for decode: the generated object knows the schema, so it
+sizes and owns the storage each field lands in, then drives the corelib over it like any
+other caller. A corelib that needs a value materialized somewhere asks its caller for the
+room; it does not take it.
+
+**Reassembly is not an exception.** A payload split across fed chunks has to be joined
+somewhere (§5.2). That somewhere is the destination the caller supplied — the corelib
+copies each piece into it as the piece arrives, which is what the chunk-lifetime rule
+(§5.2) already forces it to do. An implementation **MUST NOT** grow a private accumulator
+instead.
+
+**Bounded working state is not allocation.** A fixed-size parse stack, the `MAX_DEPTH`
+counter (§4.9), a held-back header (§5.1), a partial varint — all of these are bounded by
+constants this document fixes, and may live in the decoder's own fixed-size state. What is
+forbidden is memory whose size the *message* decides.
+
+### 6.7 Payload position, for callers that want a view (normative where offered)
+
+Only `string` and `blob` payloads can be viewed rather than copied: they are runs of 8-bit
+bytes whose wire form **is** their in-memory form. Every other field is decoded — a varint
+is not its own value, and a `fixlen` float array is not guaranteed aligned on the wire
+(§4.6) — so for those a view is not merely unhelpful but impossible.
+
+A corelib **MAY** therefore expose, on its decoder, a **getter for the byte position of the
+payload currently being delivered**, callable from inside the field handler:
+
+* it reports the offset of the payload's **first byte within the message's byte stream**,
+  counted from the first byte ever fed — never an offset into a particular buffer, which
+  would not survive chunking;
+* it is defined only while a `string` or `blob` payload is being delivered;
+* it is a **getter, not a callback parameter**. The position is wanted by a minority of
+  callers on a minority of field kinds; threading it through every callback would put the
+  cost on every decode to serve those. A port that offers it therefore adds a call, not an
+  argument.
+
+**Why the message stream and not the buffer.** The corelib knows how many bytes it has
+consumed; that counter exists regardless of how the bytes arrived. Whether a given message
+offset maps to live memory is then a question about the *caller's* storage, which only the
+caller can answer — and that is precisely the decision this section is moving out of the
+corelib.
+
+**What a caller may do with it.** Placing a view is the caller's judgement and the caller's
+risk. Two rules make it safe, and a port offering the getter **MUST** document both:
+
+* a view **MUST NOT** be constructed before the payload is **complete**. The length is known
+  from the `fixlen_word` before the bytes arrive, so a view built at the header spans memory
+  that has not been written yet — in several languages that is undefined behaviour on
+  construction, not merely a stale read. Recording the position and materializing the view
+  on access makes the premature state unrepresentable rather than forbidden;
+* a view is only valid for a message that reached **`COMPLETE`** (§5.2). On `INVALID` the
+  caller discards the whole decoded object, not individual fields.
+
+**Embedded-friendly implementations are exempt.** A port built for constrained targets
+**MAY** omit the getter entirely: without a heap it cannot hold a whole message anyway, so
+it has nothing for a view to point into and always copies into the destination. Omitting it
+is conformant and needs no justification beyond the profile. Note that this is an exemption
+from *offering* the getter, never from §6.6 — a heap-free port is the one that was already
+obeying §6.6 before it was written down.
+
 ---
 
 ## 7. Mandatory Unit Testing
@@ -1581,17 +1671,26 @@ this into an API listing.
   handed memory that is not the output buffer, and a reader of this section needs
   to know before writing a sink that retains what it receives.
 * **Input buffer (decoding)** — who owns the bytes being parsed and how long they must
-  outlive the call. For the **one-shot** `decode(buffer)` this is where a port states
-  whether decoded `string`/`blob` values are zero-copy views into the caller's buffer
-  (valid as long as it is) or copies. For the **streaming** `feed(chunk)` there is nothing
-  to choose: §6 requires a fed chunk to be reusable the moment `feed` returns, so a
-  streaming decode always copies out. Say which of the two the port's `decode` does; do
-  not restate the streaming rule.
+  outlive the call. There is nothing to choose here any more: **the corelib always copies a
+  decoded value into the destination the caller supplied**, on the one-shot path exactly as
+  on the streaming one (§6.6). Say who owns the input bytes and until when; do not restate
+  the rule.
+* **Views**, only if the port offers the payload-position getter of §6.7 — name it, say
+  that it reports a **message-stream** offset, and state the two conditions a caller must
+  meet before building a view (payload complete; message reached `COMPLETE`). A port that
+  omits the getter says nothing here at all.
 
-State plainly whether the hot path allocates and whether any library-owned heap
-memory exists (e.g. a small internal carry/accumulator for chunk-straddling
-fields). Where it helps, add a short owner/lifetime table for the two buffers.
-Keep the wording parallel across ports.
+State plainly that the corelib allocates nothing (§6.6) — no heap on either side, no
+library-owned accumulator for chunk-straddling fields — and where the storage each decoded
+field lands in comes from. Where it helps, add a short owner/lifetime table for the two
+buffers. Keep the wording parallel across ports.
+
+**This section used to be where ports diverged.** It previously invited each to declare
+whether its one-shot `decode` returned views or copies, and the family split roughly evenly
+on that question — which meant the same schema carried different memory obligations
+depending on the language a caller happened to use. §6.6 and §6.7 replace that choice with
+one rule plus one optional, uniformly-shaped accessor, so what this section documents is now
+a port's *conformance*, not its *dialect*.
 
 ### 9.7 `## Build & test`
 
@@ -1812,6 +1911,20 @@ A new `corelib-<lang>` is conformant when:
       pull-read, lazy field binding, and auto-skip (§5.2), returning the three-valued
       `COMPLETE` / `INCOMPLETE` / `INVALID` outcome with **no** `finish`/`finalize` step —
       `INCOMPLETE` surfaced, never auto-promoted to an error (§5.2).
+- [ ] **The corelib allocates nothing (§6.6)** — no heap on either side and on no path:
+      no `malloc`/`realloc`/`free`, no `new`/`delete`, no allocator call, no growable
+      container it owns, and no private accumulator for a chunk-straddling payload (it
+      copies each piece into the caller's destination as it arrives). Fixed-size parse
+      state bounded by this document's constants is not allocation.
+- [ ] **Visitor surface present (§5.3)** — required for any language with objects,
+      classes or structs, so a decode can write straight into a member the caller already
+      owns. Exempt: languages without objects (C), and embedded-friendly ports that prefer
+      a pull/cursor surface. A pull surface is an addition to it, not a replacement.
+- [ ] **Payload-position getter (§6.7)** — if offered: reports a **message-stream** offset
+      (never a buffer offset), is a getter rather than a callback argument, is defined only
+      during `string`/`blob` delivery, and the README states both caller conditions
+      (payload complete; message reached `COMPLETE`). Omitting it is conformant, and is the
+      expected choice for an embedded-friendly port.
 - [ ] Result/error reporting follows the §6.3 baseline codes (or idiomatic exceptions
       where the language uses them by default; return codes / result objects otherwise).
 - [ ] UTF-8 string-validity contract per §6.4 — byte-container targets expose
