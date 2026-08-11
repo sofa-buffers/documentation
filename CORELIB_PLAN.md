@@ -875,7 +875,9 @@ should be adapted to the language's conventions; semantics are fixed.
   answer.
 * Per-field: **read** the value into a typed destination, or **skip**. If the language
   supports overloading a single `read(destination)` suffices; otherwise use
-  `read_<type>(destination)` variants.
+  `read_<type>(destination)` variants. A port that offers the payload-position getter of
+  §6.7 has a third choice — **examine**, which validates the payload without materializing
+  it, for a caller that intends to view it in place.
 * Descend into nested sequences with a child handler (e.g. `read_sequence`); auto-skip
   of unread fields and whole sub-sequences.
 
@@ -1457,31 +1459,38 @@ risk. Two rules make it safe, and a port offering the getter **MUST** document b
 * a view is only valid for a message that reached **`COMPLETE`** (§5.2). On `INVALID` the
   caller discards the whole decoded object, not individual fields.
 
-**Viewing is skipping, and it inherits what skipping loses (normative).** A caller that
-wants a view does not hand the decoder a destination — there is nothing to copy into — so
-the field takes the **skip** path, which for a `string`/`blob` is a length jump that leaves
-the payload untouched where it lies. That is exactly what makes the view possible. But a
-skip is also the §7.3 path for a field nobody wanted, and it deliberately performs **no**
-checks: §6.4 pins that a skipped field is never validated, and the corelib does not know the
-schema, so no bound is applied either.
+**Viewing is a third intent, not a skip (normative).** The obvious way to reach a view is to
+hand the decoder no destination — there is nothing to copy into — and let the field fall to
+the **skip** path, which for a `string`/`blob` is a length jump that leaves the payload
+where it lies. **A port MUST NOT do that.** Skip means "nobody wanted this field": it is the
+§7.3 path for an unknown id and a wire-type mismatch, and it deliberately performs **no**
+checks — §6.4 pins that a skipped field is never validated. Routing a wanted field through
+it would silently opt the caller out of strict UTF-8, and no shared vector would catch it,
+because the vectors only fire on a value the decoder is asked about.
 
-A caller that views therefore **MUST** perform the two checks the read path would have
-performed, and a port's generated layer **MUST** emit them:
+A port offering the getter **MUST** therefore expose a third per-field intent alongside read
+and skip (§5.2):
 
-* **UTF-8**, for `string`. This is the case §6.4's `utf8_valid(bytes) -> bool` primitive
-  already exists for — "where generated code, not the corelib, materializes the string" —
-  and a view is that situation in every language, not only in the byte-container targets
-  that sentence was written for. The call is **unconditional**; the gate lives inside the
-  primitive, so flipping `SOFAB_STRICT_UTF8` never requires regenerating code. Without it,
-  a port that views its strings has silently opted out of strict UTF-8, and no shared
-  vector would notice.
-* **The schema bound.** An over-`maxlen` payload is `INVALID` (MESSAGE_SPEC §7.1). The
-  caller has the length already — it is half of what it asked the getter for — so this
-  costs a comparison.
+| intent | corelib | caller |
+|---|---|---|
+| **read** | materializes into the destination, and validates | takes the value |
+| **examine** | validates, materializes nothing | records offset + length, views later |
+| **skip** | neither | ignores the field |
 
-Neither check costs more than the read path spent: `utf8_valid` scans the same bytes the
-corelib would have scanned, and the bound was compared there too. What changes is only
-*who* runs them.
+`examine` costs what `read` costs minus the copy. It is emphatically **not** an exemption
+from §6.4: an invalid-UTF-8 `string` is `INVALID` whether it was read or examined, reported
+at payload completion, and a chunk boundary never changes the outcome.
+
+**Why the corelib validates and not the caller.** A view needs the payload contiguous; the
+*check* does not. The corelib validates incrementally as pieces arrive — it already must, on
+the read path — so `examine` works for a payload split across chunks, which a caller running
+its own validator over a view could not: there is no view yet to run it over. Keeping the
+check in the corelib also keeps it in one place per port, reusing the validator the read path
+already has, rather than emitting one per generated backend.
+
+**The schema bound stays with the caller.** An over-`maxlen` payload is `INVALID`
+(MESSAGE_SPEC §7.1), and the corelib does not know the schema — that does not change here.
+The caller compares the length it already asked the getter for.
 
 **Embedded-friendly implementations are exempt.** A port built for constrained targets
 **MAY** omit the getter entirely: without a heap it cannot hold a whole message anyway, so
@@ -1951,11 +1960,11 @@ A new `corelib-<lang>` is conformant when:
       during `string`/`blob` delivery, and the README states both caller conditions
       (payload complete; message reached `COMPLETE`). Omitting it is conformant, and is the
       expected choice for an embedded-friendly port.
-- [ ] **A viewed field is still checked (§6.7)** — viewing takes the skip path, which
-      validates nothing (§6.4) and knows no schema bound, so the generated layer emits an
-      unconditional `utf8_valid` call for a viewed `string` and compares the payload length
-      against the schema `maxlen`. Tested with an invalid-UTF-8 and an over-`maxlen` payload
-      on the viewing path, not only on the reading one.
+- [ ] **A viewed field is still checked (§6.7)** — if the getter is offered, the port has a
+      third per-field intent (`examine`): it validates without materializing, and a wanted
+      field is never routed through `skip`, which checks nothing (§6.4). Tested with an
+      invalid-UTF-8 payload **split across a chunk boundary** on the examine path, and with
+      an over-`maxlen` payload, which the generated layer rejects from the reported length.
 - [ ] Result/error reporting follows the §6.3 baseline codes (or idiomatic exceptions
       where the language uses them by default; return codes / result objects otherwise).
 - [ ] UTF-8 string-validity contract per §6.4 — byte-container targets expose
