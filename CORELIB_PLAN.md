@@ -552,7 +552,8 @@ A corelib **MUST NOT**:
 
 * **allocate an output buffer.** Every buffer the encoder writes into is caller-supplied.
   There is one buffer-ownership model rather than two, and a heap-less profile is not a
-  special case of it but the plain reading.
+  special case of it but the plain reading. This is the encode half of **§6.6**, which
+  denies the *message* a say in the memory this process commits on either side.
 * **grow or reallocate** a buffer the caller supplied; what was handed over is what gets
   written;
 * return **partial output as if it were complete** — an encoder that could not write what
@@ -1391,6 +1392,74 @@ position, across decode → re-encode **and** any materialized walk, on **every*
 decode surface. The SofaBuffers differential harness (Crucible) additionally
 checks that all language drivers agree bit-for-bit on every `fp32` NaN.
 
+### 6.6 Memory: the message never decides an allocation (normative)
+
+**A corelib's codec MUST NOT take memory whose size the message decides.** Every byte it
+reads, writes or reports on lives in storage sized by the **caller**, or by a **constant
+this document fixes** — never by a length word, an element count, or any other number that
+arrived on the wire.
+
+The rule is about the **source of the size, not the mechanism**. `malloc`, `new`, an
+allocator handed in as a parameter, and `resize()` on a container the caller supplied are
+all the same act: if the argument came off the wire, the peer chose how much memory this
+process commits. A port that calls nothing itself but **requires a growable destination**
+and grows it from a wire count has not avoided the problem — it has moved the allocator
+call one type away, where a source-level audit no longer sees it. Conversely, a port that
+allocates a `MAX_DEPTH`-deep stack through its language's allocator has not broken this
+rule: nothing on the wire chose that number.
+
+What this buys, and what was previously argued port by port: a firmware target and a server
+target run the *same* code rather than two profiles of it; a caller can bound a decode's
+memory by construction instead of by measurement; and "who frees this" stops being a
+question a port answers in its README.
+
+**Scope: the codec, not the package.** This section binds the **codec** — the encoder and
+decoder that touch wire bytes. It does **not** bind the **static helper layer** that ships
+alongside it: the reassembly buffers, sequence collectors and array builders that a port
+holds so the generator does not have to emit them into every generated package
+(SofaBuffers ARCHITECTURE §8). That code is the generated layer's, and the generated layer
+allocates. It lives in the corelib repository for reuse, not because it is part of the
+codec, and a reader auditing §6.6 must not mistake one for the other.
+
+**The generated layer allocates; the codec does not.** §5.1 already states this for encode,
+and it reads identically for decode: the generated object knows the schema, so it sizes and
+owns the storage each field lands in, then drives the codec over it like any other caller. A
+codec that needs a value materialized somewhere asks its caller for the room; it does not
+take it.
+
+**Reassembly is not an exception.** A payload split across fed chunks has to be joined
+somewhere (§5.2). That somewhere is storage the caller supplied — the codec copies each
+piece into it as the piece arrives, which is what the chunk-lifetime rule (§5.2) already
+forces it to do. A codec **MUST NOT** grow a private accumulator instead. A *helper* that
+does exactly that on the caller's behalf is the static helper layer above, and is not this
+section's business.
+
+**Bounded working state is allowed because it is atomic, not because it is small.** A
+fixed-size parse stack, the `MAX_DEPTH` counter (§4.9), a held-back header (§5.1), a partial
+varint, a landing zone for a scalar split across a chunk boundary — all of these exist so
+that the caller's destination is written **exactly once, complete**. A codec that wrote a
+half-arrived value into the destination and patched it up later would expose a state no
+caller can reason about. Their size comes from this document, so the message cannot choose
+it, and that is what makes them conformant; being small is a consequence, not the licence.
+
+This section **prescribes no design** for such state. A scalar shift register, a fixed
+array, a byte-at-a-time carry are all correct; a port picks what its language makes cheap.
+
+**Consequence for the callback surface.** A callback that delivers a **materialized
+aggregate** — a whole `string`, a whole byte array, a whole element list — obliges the codec
+to build that value, and the only size available to build it from is the wire's. Ports
+meeting this section therefore deliver an aggregate either **in pieces**, with the payload's
+total, this piece's offset and the caller's own buffer as arguments, or **into a destination
+the caller hands back** after being told the announced count, with the codec refusing a
+destination too short rather than growing it. Scalar callbacks are unaffected: they carry a
+value, and a value is not storage.
+
+**This is checked by measurement, not by reading the source.** Because the rule is about the
+size's origin rather than the call, a grep for `malloc` proves nothing — an indirect
+allocation through a caller-supplied container leaves no such token behind. Conformance is
+demonstrated by counting allocations, or the heap high-water mark, across a complete decode
+(§13).
+
 ---
 
 ## 7. Mandatory Unit Testing
@@ -2004,6 +2073,15 @@ A new `corelib-<lang>` is conformant when:
       pull-read, lazy field binding, and auto-skip (§5.2), returning the three-valued
       `COMPLETE` / `INCOMPLETE` / `INVALID` outcome with **no** `finish`/`finalize` step —
       `INCOMPLETE` surfaced, never auto-promoted to an error (§5.2).
+- [ ] **The message never decides an allocation (§6.6)** — across a complete decode, on
+      every surface the port offers, no storage is sized by a length word, an element count
+      or any other wire value: not by an allocator call of the port's own, and not by
+      growing a destination the caller supplied. **Measured, not read** — an allocation
+      count or heap high-water mark over a decode, since an indirect allocation through a
+      caller's container leaves no `malloc` in the source to find. Fixed-size working state
+      bounded by this document's constants does not count. Applies to the codec; the static
+      helper layer shipped beside it (ARCHITECTURE §8) is the generated layer's and is
+      exempt.
 - [ ] Result/error reporting follows the §6.3 baseline codes (or idiomatic exceptions
       where the language uses them by default; return codes / result objects otherwise).
 - [ ] UTF-8 string-validity contract per §6.4 — byte-container targets expose
