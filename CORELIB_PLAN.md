@@ -876,7 +876,9 @@ should be adapted to the language's conventions; semantics are fixed.
   answer.
 * Per-field: **read** the value into a typed destination, or **skip**. If the language
   supports overloading a single `read(destination)` suffices; otherwise use
-  `read_<type>(destination)` variants.
+  `read_<type>(destination)` variants. A port that offers the payload-position getter of
+  §6.7 has a third choice — **examine**, which validates the payload without materializing
+  it, for a caller that intends to view it in place.
 * Descend into nested sequences with a child handler (e.g. `read_sequence`); auto-skip
   of unread fields and whole sub-sequences.
 
@@ -1454,6 +1456,82 @@ allocation through a caller-supplied container leaves no such token behind. Conf
 demonstrated by counting allocations, or the heap high-water mark, across a complete decode
 (§13).
 
+### 6.7 Payload position, for callers that want a view (normative where offered)
+
+Only `string` and `blob` payloads can be viewed rather than copied: they are runs of 8-bit
+bytes whose wire form **is** their in-memory form. Every other field is decoded — a varint
+is not its own value, and a `fixlen` float array is not guaranteed aligned on the wire
+(§4.6) — so for those a view is not merely unhelpful but impossible.
+
+A corelib **MAY** therefore expose, on its decoder, a **getter for the byte position of the
+payload currently being delivered**, callable from inside the field handler:
+
+* it reports the offset of the payload's **first byte within the message's byte stream**,
+  counted from the first byte ever fed — never an offset into a particular buffer, which
+  would not survive chunking;
+* it is defined only while a `string` or `blob` payload is being delivered;
+* it is a **getter, not a callback parameter**. The position is wanted by a minority of
+  callers on a minority of field kinds; threading it through every callback would put the
+  cost on every decode to serve those. A port that offers it therefore adds a call, not an
+  argument.
+
+**Why the message stream and not the buffer.** The corelib knows how many bytes it has
+consumed; that counter exists regardless of how the bytes arrived. Whether a given message
+offset maps to live memory is then a question about the *caller's* storage, which only the
+caller can answer — and that is precisely the decision this section is moving out of the
+corelib.
+
+**What a caller may do with it.** Placing a view is the caller's judgement and the caller's
+risk. Two rules make it safe, and a port offering the getter **MUST** document both:
+
+* a view **MUST NOT** be constructed before the payload is **complete**. The length is known
+  from the `fixlen_word` before the bytes arrive, so a view built at the header spans memory
+  that has not been written yet — in several languages that is undefined behaviour on
+  construction, not merely a stale read. Recording the position and materializing the view
+  on access makes the premature state unrepresentable rather than forbidden;
+* a view is only valid for a message that reached **`COMPLETE`** (§5.2). On `INVALID` the
+  caller discards the whole decoded object, not individual fields.
+
+**Viewing is a third intent, not a skip (normative).** The obvious way to reach a view is to
+hand the decoder no destination — there is nothing to copy into — and let the field fall to
+the **skip** path, which for a `string`/`blob` is a length jump that leaves the payload
+where it lies. **A port MUST NOT do that.** Skip means "nobody wanted this field": it is the
+§7.3 path for an unknown id and a wire-type mismatch, and it deliberately performs **no**
+checks — §6.4 pins that a skipped field is never validated. Routing a wanted field through
+it would silently opt the caller out of strict UTF-8, and no shared vector would catch it,
+because the vectors only fire on a value the decoder is asked about.
+
+A port offering the getter **MUST** therefore expose a third per-field intent alongside read
+and skip (§5.2):
+
+| intent | corelib | caller |
+|---|---|---|
+| **read** | materializes into the destination, and validates | takes the value |
+| **examine** | validates, materializes nothing | records offset + length, views later |
+| **skip** | neither | ignores the field |
+
+`examine` costs what `read` costs minus the copy. It is emphatically **not** an exemption
+from §6.4: an invalid-UTF-8 `string` is `INVALID` whether it was read or examined, reported
+at payload completion, and a chunk boundary never changes the outcome.
+
+**Why the corelib validates and not the caller.** A view needs the payload contiguous; the
+*check* does not. The corelib validates incrementally as pieces arrive — it already must, on
+the read path — so `examine` works for a payload split across chunks, which a caller running
+its own validator over a view could not: there is no view yet to run it over. Keeping the
+check in the corelib also keeps it in one place per port, reusing the validator the read path
+already has, rather than emitting one per generated backend.
+
+**The schema bound stays with the caller.** An over-`maxlen` payload is `INVALID`
+(MESSAGE_SPEC §7.1), and the corelib does not know the schema — that does not change here.
+The caller compares the length it already asked the getter for.
+
+**Embedded-friendly implementations are exempt.** A port built for constrained targets
+**MAY** omit the getter entirely: without a heap it cannot hold a whole message anyway, so
+it has nothing for a view to point into and always copies into the destination. Omitting it
+is conformant and needs no justification beyond the profile. Note that this is an exemption
+from *offering* the getter, never from §6.6 — a port that never lets the message decide an
+allocation is the one that was already obeying §6.6 before it was written down.
+
 ---
 
 ## 7. Mandatory Unit Testing
@@ -1905,6 +1983,16 @@ A new `corelib-<lang>` is conformant when:
       classes or structs, so a decode can write straight into a member the caller already
       owns. Exempt: languages without objects (C), and embedded-friendly ports that prefer
       a pull/cursor surface. A pull surface is an addition to it, not a replacement.
+- [ ] **Payload-position getter (§6.7)** — if offered: reports a **message-stream** offset
+      (never a buffer offset), is a getter rather than a callback argument, is defined only
+      during `string`/`blob` delivery, and the README states both caller conditions
+      (payload complete; message reached `COMPLETE`). Omitting it is conformant, and is the
+      expected choice for an embedded-friendly port.
+- [ ] **A viewed field is still checked (§6.7)** — if the getter is offered, the port has a
+      third per-field intent (`examine`): it validates without materializing, and a wanted
+      field is never routed through `skip`, which checks nothing (§6.4). Tested with an
+      invalid-UTF-8 payload **split across a chunk boundary** on the examine path, and with
+      an over-`maxlen` payload, which the generated layer rejects from the reported length.
 - [ ] Result/error reporting follows the §6.3 baseline codes (or idiomatic exceptions
       where the language uses them by default; return codes / result objects otherwise).
 - [ ] UTF-8 string-validity contract per §6.4 — byte-container targets expose
