@@ -1678,8 +1678,29 @@ ready-to-use, reproducible development environment based on Docker and VS Code D
 
 ## 12. GitHub Workflows
 
-Every `corelib-<lang>` repository ships **two** GitHub Actions workflow files under
-`.github/workflows/`.
+Every `corelib-<lang>` repository ships a **CI** workflow (§12.1) and a **docs**
+workflow (§12.2) under `.github/workflows/`, plus a **version-consistency**
+workflow (§12.3) where the tree carries a version to check at all.
+
+`ci.yml`, `docs.yml` and `version-consistency.yml` are the family's conventional
+filenames, not requirements: a repository whose docs workflow is called
+`build-doxygen.yaml` is conformant, and `.yml` and `.yaml` are the same file.
+What this section fixes is the trigger, the settings and the ordering — never
+the name.
+
+Two further files are permitted and neither is required:
+
+* a reusable **`workflow_call`** file, for a build that repeats per target,
+  called from `ci.yml`;
+* a **release** workflow, where the language publishes to a package registry
+  (crates.io, PyPI, npm, …). A corelib that ships no package has none, and one
+  that does is not obliged to automate the publish here.
+
+Everything that runs on a **branch push or a pull request** belongs to one
+pipeline. `needs:` cannot cross workflow files, so a target living in its own
+file can never be sequenced behind anything. Tag-triggered workflows are outside
+this rule — they answer a different event and have nothing to be sequenced
+behind.
 
 ### 12.1 CI — Build & Test (`ci.yml`)
 
@@ -1700,7 +1721,19 @@ differences rarely affect library code (e.g. Go, Java, C#), a single pinned vers
 is acceptable.
 
 When a matrix *is* used, set `fail-fast: false` so a failure on one leg does not
-cancel the remaining legs — all results must be visible. Use the official GitHub
+cancel the remaining legs — all results must be visible. This is also why a
+matrix must never be folded into a single job that loops over its values,
+however tempting the per-leg setup cost makes it: the loop reports one verdict
+where the matrix reported one per value.
+
+Folding an axis into *steps* is a different matter and is allowed, as long as
+each step carries `if: always()` so a failing one cannot hide those after it.
+That keeps every value's name, duration and log; what it gives up is one row per
+value in the checks list. Use it only for an axis whose values share an
+environment — four sets of compile flags, say. An axis whose values need
+different environments (a runtime version, a cross toolchain) stays a matrix.
+
+Use the official GitHub
 Actions setup action for the language (`dtolnay/rust-toolchain`,
 `actions/setup-python`, `actions/setup-go`, `actions/setup-java`,
 `actions/setup-node`, etc.) and enable its built-in dependency cache. Example shape:
@@ -1712,6 +1745,38 @@ strategy:
     version: ["<current-stable>", "<previous-stable>"]
     os: [ubuntu-latest]          # add windows-latest / macos-latest for cross-platform targets
 ```
+
+**Required workflow settings**
+
+A workflow-level `concurrency` group, so a superseded push releases its runner
+slots instead of queueing behind itself:
+
+```yaml
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+```
+
+`cancel-in-progress` is deliberately off on `main`: a push there must keep its
+full run, including the coverage and badge jobs that only run on `main`. This is
+the one setting here with no per-repository judgement in it — a repository that
+cancels on `main` loses a badge update whenever two pushes land close together.
+
+A reusable `workflow_call` file declares **no group of its own**. It runs inside
+the calling workflow's run and is already covered by the caller's group; a second
+group would only contend with the first for the same run.
+
+**`timeout-minutes` on every job that runs steps.** GitHub's default is 360
+minutes, and a job that wedges holds a runner slot for all of them. This is not
+hypothetical: an `apt-get install` in this family has run for 87 minutes and
+twice never returned. Pick roughly four times the job's normal duration, and
+wrap any network fetch the workflow issues itself — `apt-get`, `curl`, `wget` —
+in a bounded retry. Do not wrap the `setup-*` actions or the language's own
+package manager; they retry and cache on their own.
+
+A job that only delegates with `uses:` is the exception, and a mechanical one: it
+cannot carry `timeout-minutes` at all. The bound belongs on the jobs of the
+called workflow, which is where the steps are.
 
 **Required steps**
 
@@ -1725,6 +1790,32 @@ strategy:
    JaCoCo, Coverlet, etc.).
 7. Upload the report to a coverage service (Codecov or equivalent) and wire the
    resulting badge into the README (see §9.2).
+
+**Ordering: gate the fan-out**
+
+Steps 1–3 are cheap and every leg repeats them. Where a repository fans out
+wide, a gate job runs first and everything else declares `needs:` on it, so a
+broken tree is discovered once rather than once per leg. In a repository with
+many targets this is the difference between 51 runner-minutes and 28 seconds to
+learn the same fact.
+
+Both halves of the gate are conditional, and a repository that warrants neither
+is conformant with no gate at all:
+
+* a **lint gate**, only where the language already has a linter configured in
+  the tree. Introducing one to satisfy this section is not the point: a corelib
+  whose build is `mvn -B verify` or `dotnet test`, with no linter beside it, has
+  nothing to gate on.
+* a **compile-only gate**, only where the fan-out is large enough to pay for the
+  serialised minute — roughly a factor of four between what the fan-out costs
+  and what the gate costs. A matrix of three runtime versions or four compile
+  configurations sits below that line, and gating it costs more on every green
+  push than it saves on the rare red one.
+
+The gate compiles and does not test — a gate that runs the suite is a second
+pipeline, not a gate. Where the linter already compiles
+(`cargo clippy --all-targets`), the lint job *is* the gate, and a separate build
+job only compiles the same tree twice.
 
 ### 12.2 Docs — API Documentation (`docs.yml`)
 
@@ -1778,6 +1869,42 @@ permissions:
 
 The site is served at `https://sofa-buffers.github.io/<repo>/`. This URL is the
 target of the **Docs badge** described in §9, item 2.
+
+**Why this stays its own file**
+
+The docs workflow owns a workflow-level `concurrency` group so two Pages
+deployments can never race. A workflow may hold only one such group, and
+`ci.yml` needs its own for cancel-on-superseded (§12.1) — so the two cannot
+share a file. Keeping them apart also keeps `pages: write` and `id-token: write`
+out of the workflow that builds and tests: scope them to the deploy job alone.
+
+### 12.3 Version consistency (`version-consistency.yml`)
+
+Runs on **tag pushes only**:
+
+```yaml
+on:
+  push:
+    tags: [ 'v*' ]
+```
+
+It compares the tag, minus the leading `v`, against the version in every
+manifest the repository ships — `Cargo.toml`, `package.json`, `pubspec.yaml`,
+`pom.xml`, the `.csproj`, `build.zig.zon`, `conanfile.py`, `library.json`, the
+CMake `project()` version, `__version__` — and fails the tag on any mismatch.
+
+The trigger is not a detail. A comparison is only meaningful when there is a tag
+to compare against, and between releases a manifest may legitimately run ahead
+of the newest tag: a repository preparing 0.11.0 while `v0.10.0` is the newest
+tag is correct, not broken. Running the check on `main` or on pull requests
+compares the manifests against whatever tag happens to be newest, which says
+nothing about the commit under test.
+
+Two cases have nothing to check and must not carry this workflow: **Go**, whose
+module version *is* the tag and appears nowhere in the tree, and any corelib
+that has not yet cut its first release. The rule generalises past Go — wherever
+the tag is the single source of truth for the version, there is no second copy
+to disagree with it.
 
 ---
 
@@ -1839,6 +1966,19 @@ A new `corelib-<lang>` is conformant when:
 - [ ] `ci.yml` builds and tests on push and PR; matrix across runtime versions used
       where version differences matter (scripting languages, multiple compilers);
       coverage report uploaded and badge wired into README (§12.1).
+- [ ] Every workflow file that is triggered by an event declares a `concurrency`
+      group, with `cancel-in-progress` off on `main`; a reusable `workflow_call`
+      file declares none and is covered by its caller's (§12.1).
+- [ ] Every job that runs steps declares `timeout-minutes`, and every network
+      fetch the workflow issues itself is wrapped in a bounded retry (§12.1).
+- [ ] Everything that runs on a branch push or a pull request lives in one
+      pipeline, so that a gate can precede the fan-out where one is warranted —
+      a lint gate where a linter is configured, a compile-only gate where the
+      fan-out is large enough to pay for it. A repository with neither is
+      conformant with no gate (§12.1).
+- [ ] The version-consistency workflow triggers on tag pushes only and compares
+      the tag against every manifest the repository ships — or is deliberately
+      absent because the tag is the only version there is (§12.3).
 - [ ] `docs.yml` generates HTML docs and publishes to GitHub Pages via the
       Actions-based deployment (no `gh-pages` branch); Docs badge in README links to
       the published site (§12.2).
