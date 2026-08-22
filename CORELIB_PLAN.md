@@ -1739,17 +1739,28 @@ this into an API listing.
   handed memory that is not the output buffer, and a reader of this section needs
   to know before writing a sink that retains what it receives.
 * **Input buffer (decoding)** — who owns the bytes being parsed and how long they must
-  outlive the call. For the **one-shot** `decode(buffer)` this is where a port states
-  whether decoded `string`/`blob` values are zero-copy views into the caller's buffer
-  (valid as long as it is) or copies. For the **streaming** `feed(chunk)` there is nothing
-  to choose: §6 requires a fed chunk to be reusable the moment `feed` returns, so a
-  streaming decode always copies out. Say which of the two the port's `decode` does; do
-  not restate the streaming rule.
+  outlive the call. There is nothing to choose here any more: **the codec always copies a
+  decoded value into storage the caller supplied**, on the one-shot path exactly as on the
+  streaming one (§6.6). Say who owns the input bytes and until when; do not restate the
+  rule.
+* **Views**, only if the port offers the payload-position getter of §6.7 — name it, say
+  that it reports a **message-stream** offset, and state the two conditions a caller must
+  meet before building a view (payload complete; message reached `COMPLETE`). A port that
+  omits the getter says nothing here at all.
 
-State plainly whether the hot path allocates and whether any library-owned heap
-memory exists (e.g. a small internal carry/accumulator for chunk-straddling
-fields). Where it helps, add a short owner/lifetime table for the two buffers.
-Keep the wording parallel across ports.
+State plainly that no wire value decides an allocation in the codec (§6.6) — including that
+there is no library-owned accumulator for chunk-straddling fields — and where the storage
+each decoded field lands in comes from. If the port ships a static helper layer beside the
+codec (ARCHITECTURE §8), say so and say that it allocates on the generated layer's behalf,
+so a reader does not read its buffers as a §6.6 breach. Where it helps, add a short
+owner/lifetime table for the two buffers. Keep the wording parallel across ports.
+
+**This section used to be where ports diverged.** It previously invited each to declare
+whether its one-shot `decode` returned views or copies, and the family split roughly evenly
+on that question — which meant the same schema carried different memory obligations
+depending on the language a caller happened to use. §6.6 and §6.7 replace that choice with
+one rule plus one optional, uniformly-shaped accessor, so what this section documents is now
+a port's *conformance*, not its *dialect*.
 
 ### 9.7 `## Build & test`
 
