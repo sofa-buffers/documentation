@@ -1510,6 +1510,38 @@ command, version number, dependency, feature flag, and API name the README state
 must match the code as it stands today — fix anything stale, inaccurate, or
 misleading.
 
+**The README states; it does not argue.** It carries facts — what the library is,
+what it requires, what to type, what a call looks like, what the numbers are. It
+does not carry the reasoning behind them. Three kinds of prose belong nowhere in
+it:
+
+* **rationale** — why an API has the shape it does, why a trade-off went the way it
+  went. There is exactly one place for this, the table in §9.3, which is a table
+  precisely so it cannot grow into an essay;
+* **anticipated objections** — text defending a decision against a reader who has
+  not raised it. A reader who wants that argument is looking for the spec;
+* **restatement of the specification.** `MESSAGE_SPEC.md` and this document are
+  normative and one link away. A README that paraphrases them creates a second
+  source that drifts, and the drift stays invisible until someone trusts the wrong
+  copy.
+
+The prohibition on inventing sections binds at **every heading depth**, not only at
+`##`. A new `###` or `####` inside a sanctioned section is the usual way this shape
+is lost — it is how a README reaches thirty headings without a single new top-level
+one.
+
+**When removing something, apply the deletion test:** a fact may leave the README
+only if it is present in the generated API documentation. If it is nowhere else, it
+is not deleted — it is written into the doc comments first and removed here
+afterwards. Anything found to be in neither place is reported, never quietly
+dropped.
+
+Note the asymmetry, because it is the whole point: **cutting justification never
+costs a fact.** Every statement, every code example and every table stays. Nothing
+in this section licenses removing a version number, a dependency, a command or an
+example, and a shorter README that lost one of those is a worse README, not a
+better one.
+
 The sections, in order:
 
 ### 9.1 Generic header block (centered)
@@ -1542,6 +1574,11 @@ A two-column table mapping design goals (streaming output, streaming input, zero
 unnecessary copies, low/no allocation on the hot path, small footprint, type
 safety, cross-language compatibility) to how *this* implementation achieves them.
 Keep the table format — it must stay parallel across ports.
+
+**The table is the whole section**: no prose paragraph above or below it, one line
+per cell. This is the README's only sanctioned rationale, so it is where the
+pressure lands once the rest of the document is closed to it — and prose beside the
+table is how that funnel leaks.
 
 ### 9.4 No API-documentation section
 
@@ -1958,6 +1995,9 @@ A new `corelib-<lang>` is conformant when:
 - [ ] `assets/` populated per §8 — branding from `documentation`, `test_vectors.json`
       from `corelib-c-cpp`.
 - [ ] README follows the family format with badges and the required sections (§9).
+- [ ] README carries facts, not justification: no rationale outside the §9.3 table,
+      no anticipated objections, no restatement of the specs, and no invented
+      headings at any depth (§9).
 - [ ] `perf` (CPU-independent), `bench` (MB/s), and `run_callgrind.sh` (Callgrind
       `Ir/op`) tools present and runnable (§10).
 - [ ] `.devcontainer/` folder present with `Dockerfile`, `start.sh`,
