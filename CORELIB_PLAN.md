@@ -1530,6 +1530,17 @@ The prohibition on inventing sections binds at **every heading depth**, not only
 is lost — it is how a README reaches thirty headings without a single new top-level
 one.
 
+**A port may still add a section for something genuinely its own** — a feature-flag
+table, packaging for its ecosystem, the target list of a multi-platform build. Nine
+of the twelve corelibs independently grew a `## Feature flags`, and that convergence
+is what a gap in this section looks like, not what creep looks like. The prescribed
+sections keep their names and their order, and an addition never displaces or
+replaces one. The test for an addition is the same as for everything else here: if
+what fills it is **fact** — switches, versions, coordinates, commands, targets — it
+belongs, and a port that has such things should say so under a heading of its own
+rather than smuggling them into a neighbour. If what fills it is **reasoning**, it
+does not belong, and giving it a heading does not change that.
+
 **When removing something, apply the deletion test:** a fact may leave the README
 only if it is present in the generated API documentation. If it is nowhere else, it
 is not deleted — it is written into the doc comments first and removed here
@@ -1996,8 +2007,9 @@ A new `corelib-<lang>` is conformant when:
       from `corelib-c-cpp`.
 - [ ] README follows the family format with badges and the required sections (§9).
 - [ ] README carries facts, not justification: no rationale outside the §9.3 table,
-      no anticipated objections, no restatement of the specs, and no invented
-      headings at any depth (§9).
+      no anticipated objections, no restatement of the specs. A section beyond the
+      §9 shape is fine where the port has something of its own to state — feature
+      flags, packaging, targets — provided it states facts (§9).
 - [ ] `perf` (CPU-independent), `bench` (MB/s), and `run_callgrind.sh` (Callgrind
       `Ir/op`) tools present and runnable (§10).
 - [ ] `.devcontainer/` folder present with `Dockerfile`, `start.sh`,
