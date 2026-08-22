@@ -585,9 +585,11 @@ requires the bound in order to pre-size, so a schema intended for one **MUST** d
 it.
 
 Because an unbounded field lets the **sender** dictate the **receiver's** allocation,
-an implementation may additionally be configured with generic, schema-independent
-receiver limits — a **policy** mechanism deliberately distinct from schema-bound
-validity. See CORELIB_PLAN §6.2.1.
+an implementation **MUST** additionally carry generic, schema-independent receiver
+limits — a **policy** mechanism deliberately distinct from schema-bound validity.
+Unbounded is a statement about the *message*, never about the receiver: a field the
+schema leaves open is still capped by the receiver, and the two answer different
+questions. See CORELIB_PLAN §6.2.1.
 
 ### 7.3 A header wire type that contradicts the schema (normative)
 
