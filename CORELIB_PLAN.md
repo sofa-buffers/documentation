@@ -774,19 +774,30 @@ this status through verbatim — MESSAGE_SPEC §7.)
 A new implementation **should use the best idiomatic pattern for its language** as long
 as the wire bytes and the streaming guarantees are preserved. Proven mappings:
 
-* **Visitor pattern *(preferred for object-capable languages)*:** the decoder calls
-  typed visitor methods on a user-supplied object. Pull-reading becomes "the visitor
+* **Visitor pattern *(REQUIRED for object-capable languages — normative)*:** the decoder
+  calls typed visitor methods on a user-supplied object. Pull-reading becomes "the visitor
   writes the decoded value into one of the object's own members and chooses to skip
-  anything it does not recognise". This is the **recommended choice** for any language
-  that supports objects, classes, or structs, because the primary consumer of this
-  library is *generated code* — objects or classes whose members directly mirror the
-  schema fields. Those objects already exist at decode time; the visitor pattern lets
-  the decoder write each field straight into the waiting member without an intermediate
-  representation.
+  anything it does not recognise". A port for a language with objects, classes or structs
+  **MUST** expose this surface, because the primary consumer of this library is *generated
+  code* — objects or classes whose members directly mirror the schema fields. Those objects
+  already exist at decode time; the visitor pattern lets the decoder write each field
+  straight into the waiting member without an intermediate representation.
+
+  It is required rather than recommended for the reason §6.6 exists: a decoder that writes
+  into a member the caller already owns needs no storage of its own, so the visitor surface
+  is what keeps the *message* out of the decision about how much memory a decode commits. A
+  port whose only decode surface hands back values it materialized has to build them
+  somewhere, at a size the wire chose.
+
+  **Exempt:** languages without objects (C is the standing example — it uses callbacks with
+  a context pointer, which is the same shape without the type), and **embedded-friendly**
+  ports, which may prefer a pull/cursor surface to avoid indirect calls and keep the
+  control flow inspectable. Both still obey §6.6; the exemption is about the *shape* of the
+  surface, never about who decides the size.
 * **Pull-parser / iterator:** expose an iterator or `next()`-style API that yields
-  field events; the caller pulls fields and reads or skips them. A reasonable
-  alternative for languages or use-cases where a pre-existing target object is not
-  available.
+  field events; the caller pulls fields and reads or skips them. Required only where the
+  visitor surface is exempt above; elsewhere it is a welcome **addition** to the visitor
+  surface — for callers with no pre-existing target object — never a replacement for it.
 * **Flush callback / writer sink:** for the encoder, model the flush as a closure,
   a stream/writer sink, or an iterator of byte chunks — whichever the language prefers.
 * **Heap-free / no-alloc build** where the language can target embedded or bare-metal
@@ -2082,6 +2093,10 @@ A new `corelib-<lang>` is conformant when:
       bounded by this document's constants does not count. Applies to the codec; the static
       helper layer shipped beside it (ARCHITECTURE §8) is the generated layer's and is
       exempt.
+- [ ] **Visitor surface present (§5.3)** — required for any language with objects,
+      classes or structs, so a decode can write straight into a member the caller already
+      owns. Exempt: languages without objects (C), and embedded-friendly ports that prefer
+      a pull/cursor surface. A pull surface is an addition to it, not a replacement.
 - [ ] Result/error reporting follows the §6.3 baseline codes (or idiomatic exceptions
       where the language uses them by default; return codes / result objects otherwise).
 - [ ] UTF-8 string-validity contract per §6.4 — byte-container targets expose
