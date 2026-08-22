@@ -1064,18 +1064,31 @@ decode surface.
 #### 6.2.1 Receiver-side technical limits (normative)
 
 A field whose schema declares no bound (`maxlen`/`count` omitted — MESSAGE_SPEC §7.2) is
-**unbounded**: the receiver allocates whatever the message specifies. That lets the
-**sender** dictate the **receiver's** allocation, so an implementation **MAY** be
-configured with **generic maximum limits** — capping the array count, string length and
-blob length it will materialize (e.g. `max_dyn_array_count`, `max_dyn_string_len`,
-`max_dyn_blob_len`).
+**unbounded**: the *message* declares no ceiling for it. That lets the **sender** dictate
+the **receiver's** allocation, so every receiver **MUST** carry **generic maximum
+limits** — capping the array count, string length and blob length it will materialize
+(`max_dyn_array_count`, `max_dyn_string_len`, `max_dyn_blob_len`). There is no unset
+state and no unlimited mode: unbounded by the schema is still bounded by the receiver.
+
+**The numbers and the allocation are not the codec's.** The limits come from generated
+code, which knows the schema and the target; the *values* are a per-language,
+per-deployment judgement — an element count that is trivial on a server is brutal in C —
+and how much is allocated once a count clears its limit belongs to the generated layer
+too (§6.6). What this section fixes is where the check happens and what its failure is
+called. The generator architecture owns the rest (SofaBuffers ARCHITECTURE §9.5).
+
+**What the codec contributes** is the report and the category: it surfaces the count at
+the count/length header, and for a sequence array the **index** of the element in hand —
+a wrapper array's length is *highest present id + 1* (MESSAGE_SPEC §5.1), so there the
+index is what has to be checked, there being no count header to check. The visitor
+decides; the codec never invents a limit of its own and never clamps to one.
 
 These limits are **configuration, not schema**:
 
 * They are chosen by the **implementer/deployment** to protect the system, **independent
   of any message definition**, and are **not** part of the wire contract.
 * Exceeding one is a **policy rejection by the receiver — a category distinct from
-  `INVALID`**. The bytes are well-formed and decode successfully under a looser or unset
+  `INVALID`**. The bytes are well-formed and decode successfully under a looser
   limit; nothing about the *message* is malformed. An implementation **MUST NOT** report
   it as `InvalidMessage`, and **MUST NOT** fold it into the `INVALID` decode outcome.
 * They **MUST NOT** be applied to a field the schema already bounds. There the schema
@@ -1086,7 +1099,11 @@ These limits are **configuration, not schema**:
   testing therefore compares implementations configured with **identical** limits.
 
 A limit **MUST** be enforced at the count/length header — before the allocation it is
-meant to prevent — for the same reason `INVALID` is decided there (§5.2).
+meant to prevent — for the same reason `INVALID` is decided there (§5.2). For a sequence
+array, whose length is not announced, that point is the element **index**, checked before
+the container it indexes into is extended. An over-limit value is **rejected, never
+clamped**: silently materializing `limit` elements where the wire said more is data
+corruption wearing a safety jacket.
 
 *(This is the receiver-capacity analogue of the `MAX_DEPTH` stack bound: both cap what the
 receiver will commit on untrusted input. `MAX_DEPTH` is a fixed format-wide ceiling and its
@@ -1105,7 +1122,7 @@ C/C++ reference exposes these as the `sofab_ret_t` codes / the `Error` enum.)
 | `BufferFull` | Output buffer overflowed during encoding. |
 | `InvalidArgument` | Invalid argument — a field ID out of range, a scalar width that is not 1/2/4/8 bytes, a descriptor field type that does not exist — or, with the strict UTF-8 check ON (§6.4), a `string` value that cannot be encoded as valid UTF-8 (non-UTF-8 bytes, an unpaired surrogate). |
 | `InvalidMessage` | Malformed message while decoding — malformed **regardless of what follows**: an **overlong (`>64`-bit) varint**, an unbalanced sequence end, an oversized length/count, nesting past `MAX_DEPTH`, a reserved fixlen subtype, a wrong-width `fp32`/`fp64` fixlen (§4.6), or an invalid-UTF-8 `string` **when the UTF-8 check is enabled** (§6.4). Corresponds to the `INVALID` decode outcome (§5.2). **Truncation is _not_ `InvalidMessage`** — see the note below — but input that is *both* malformed and truncated *is*: `INVALID` takes precedence over `INCOMPLETE` (§5.2). |
-| `LimitExceeded` | A configured **receiver-side technical limit** (§6.2.1) was exceeded on a schema-**unbounded** field — e.g. `max_dyn_array_count` / `max_dyn_string_len` / `max_dyn_blob_len`. The message is **well-formed**: the same bytes decode successfully under a looser or unset limit, so this says nothing about the message's validity and is **not** `InvalidMessage` and **not** the `INVALID` decode outcome (§5.2). It is a terminal, receiver-local **policy** rejection. Never raised for a field the schema bounds — there an over-bound value is `InvalidMessage` (MESSAGE_SPEC §7, §7.1). |
+| `LimitExceeded` | A configured **receiver-side technical limit** (§6.2.1) was exceeded on a schema-**unbounded** field — e.g. `max_dyn_array_count` / `max_dyn_string_len` / `max_dyn_blob_len`. The message is **well-formed**: the same bytes decode successfully under a looser limit, so this says nothing about the message's validity and is **not** `InvalidMessage` and **not** the `INVALID` decode outcome (§5.2). It is a terminal, receiver-local **policy** rejection. Never raised for a field the schema bounds — there an over-bound value is `InvalidMessage` (MESSAGE_SPEC §7, §7.1). |
 
 **Decode outcome vs. error code.** A decoder's per-`feed`/`decode` result is the
 three-valued **decode outcome** `COMPLETE` / `INCOMPLETE` / `INVALID` (§5.2),
