@@ -1473,6 +1473,22 @@ allocation through a caller-supplied container leaves no such token behind. Conf
 demonstrated by counting allocations, or the heap high-water mark, across a complete decode
 (§13).
 
+**The instrument.** A port **MUST** name the tool it used and keep the figure reproducible;
+what the figure has to show is that decoding a larger message does not raise it. The default
+instrument is the one the family already runs: **Callgrind**, which counts
+`malloc`/`free`/`operator new` alongside the instruction count the benchmarks report, so the
+number comes out of a harness each port has. Where that does not fit — a managed runtime, an
+interpreter — the port names its equivalent (an allocation profiler, a GC-allocation counter,
+an arena high-water mark) rather than skipping the check. Two readings on the same schema at
+two message sizes are enough; this is a bound, not a benchmark.
+
+**Where the size comes from instead.** Every size is knowable before the payload arrives, and
+never from the wire alone: a schema `count`/`maxlen` where the schema declares one, and the
+receiver limits of §6.2.1 where it does not — which are mandatory, with no unset state, so
+there is no field for which only the wire has a number. Both live in generated code, which is
+why the decision belongs there and not here. This section governs *who may decide*; §6.2.1
+guarantees there is always something to decide *from*.
+
 ### 6.7 Payload position, for callers that want a view (normative where offered)
 
 Only `string` and `blob` payloads can be viewed rather than copied: they are runs of 8-bit
@@ -2178,9 +2194,11 @@ A new `corelib-<lang>` is conformant when:
       or any other wire value: not by an allocator call of the port's own, and not by
       growing a destination the caller supplied. **Measured, not read** — an allocation
       count or heap high-water mark over a decode, since an indirect allocation through a
-      caller's container leaves no `malloc` in the source to find. Fixed-size working state
-      bounded by this document's constants does not count. Applies to the codec; the static
-      helper layer shipped beside it (ARCHITECTURE §8) is the generated layer's and is
+      caller's container leaves no `malloc` in the source to find. Name the instrument
+      (Callgrind counts allocator calls beside the instruction count; a managed runtime names
+      its equivalent) and show the figure does not rise with message size. Fixed-size working
+      state bounded by this document's constants does not count. Applies to the codec; the
+      static helper layer shipped beside it (ARCHITECTURE §8) is the generated layer's and is
       exempt.
 - [ ] **Visitor surface present (§5.3)** — required for any language with objects,
       classes or structs, so a decode can write straight into a member the caller already
