@@ -1571,6 +1571,10 @@ the language's idiomatic convention — `tests/` in Rust and Python,
   `fields[]` operations and their parameters, and how floats/blobs/offsets are
   represented — follow the authoritative `test_vectors_README.md` linked above rather
   than a copy here, so this plan can never drift from the generated format.
+* The file is **not only vectors.** It carries top-level blocks beside them —
+  `invalid_utf8`, and the `sequence_growth` cases of §7.2 item 8, which are keyed by a
+  sequence of element ids rather than by a byte string and therefore cannot be vectors.
+  A port runs every block that its `requires` gating does not exclude.
 * Vector categories to cover: scalars (unsigned/signed/bool/fp32/fp64/string/blob);
   field-ID boundaries (`0` and `2,147,483,647`); **all three array wire types** —
   unsigned-integer arrays (`u8..u64`, type `0b011`), signed-integer arrays (`i8..i64`,
@@ -1649,6 +1653,28 @@ the language's idiomatic convention — `tests/` in Rust and Python,
    the dangling `0x80` above carries no settled sub-field to peek at.
 7. **Skip tests** — decode while ignoring some fields and whole sub-sequences; assert
    correct resync on the following field.
+8. **Sequence-array growth tests** — replay the `sequence_growth` cases from
+   `test_vectors.json` (§7.1). A sequence array's length is *highest present id + 1*
+   (MESSAGE_SPEC §5.1), so its size is known only when the array ends and its container
+   grows as elements arrive — the one allocation shape where growth is conformant
+   (ARCHITECTURE §9.5; everything with a count or length on the wire ahead of its payload
+   checks that word and allocates exactly it, once). Nothing else in this list reaches it:
+   two ports that grow differently emit identical bytes and reach identical outcomes, so
+   §7.1's vectors are structurally blind to it. Assert, per case, the resulting **container
+   length** and the **outcome** — no allocator instrumentation, which is what makes these
+   cases portable:
+   * the element **index** is the bound: `id` at the cap-1 boundary decodes, `id` at the cap
+     is `LimitExceeded` (§6.2.1) and allocates nothing first;
+   * an id gap below the cap is filled with the element default and does not shorten or
+     shift the array;
+   * after a rejected id the container is **not** left partially extended, and a lower id
+     delivered afterwards still lands correctly.
+   Growth **geometry** — extending to at least `id + 1` rather than exactly `id + 1`, so a
+   sparse array does not cost O(n²) copies — is the one property here that needs the
+   language's own allocation-counting facility. Test it where the language offers one;
+   where it does not, say so in the port's README rather than reporting the case as passed.
+   A port that never grows (a statically bounded profile) is excluded by the block's
+   `requires` gating and states that instead.
 
 ### 7.3 Coverage
 
@@ -2212,6 +2238,11 @@ A new `corelib-<lang>` is conformant when:
       and the generated surface uses only the closed name set of §6.1.1 (§6.1).
 - [ ] All shared **test vectors** pass for both encode and decode, plus chunked,
       roundtrip, malformed, and skip tests (§7).
+- [ ] The `sequence_growth` cases of the shared file pass, asserting container length
+      and outcome per case — index bound, gap fill, no partial extension after a
+      rejected id (§7.2 item 8). Growth geometry tested where the language can count
+      allocations, documented as untested where it cannot; a port that never grows is
+      excluded by `requires` and says so.
 - [ ] `assets/` populated per §8 — branding from `documentation`, `test_vectors.json`
       from `corelib-c-cpp`.
 - [ ] README follows the family format with badges and the required sections (§9).
