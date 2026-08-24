@@ -1539,9 +1539,10 @@ perform **zero** allocations. A codec that allocates per message, per field or p
 broken the rule; one whose constructor allocated its fixed-size state once has not — nothing
 on the wire chose that size, and nothing after setup allocates again.
 
-**Where dynamic memory is otherwise allowed:** in the **static helper layer** only (§6.6.1), and
-only where the codec does not call into it. A helper that the codec invokes on the decode or
-encode path is part of the codec for the purposes of this section, whatever file it lives in.
+**Where dynamic memory is otherwise allowed:** in the **static helper layer** only (§6.6.1) —
+storage the codec does not keep. A helper the codec calls **directly** on the decode or encode
+path, and reads back from, is part of the codec for the purposes of this section, whatever file
+it lives in; one reached through a callback the codec made is not.
 
 What this buys, and what was previously argued port by port: a firmware target and a server
 target run the *same* code rather than two profiles of it; a caller can bound a decode's
@@ -1559,10 +1560,38 @@ layer's, and the generated layer allocates. It lives in the corelib repository f
 not because it is part of the codec, and **a reader auditing §6.6 must not mistake one for
 the other.**
 
-**The boundary is the call graph, not the directory.** A helper is outside the codec only if
-**no codec path calls it**. The generated layer calls the helper, and the helper calls the
-codec — never the other way round. A port that lets its decoder reach into an allocating
-helper has put allocation back into the codec, however the files are arranged.
+**What a helper is.** A **helper** is part of the corelib — it ships in the repository and is
+built with it — but the codec never uses one **directly**. Either the caller invokes it, or it
+is reached from inside a callback the codec made. It may allocate, because whatever it takes
+belongs to whoever called it.
+
+**The boundary is ownership, not the stack.** The codec allocates when it takes storage **for
+itself** — storage it will still read or write after the call returns. It does not allocate
+when it calls the visitor and the visitor's handler takes storage of its own: `feed` is on the
+stack, but that memory is the caller's and the codec keeps no reference to it. A helper
+reached only through a visitor callback is therefore outside the codec, whatever the call
+graph shows.
+
+**The test:** *does the codec still hold a reference to it after the call returns?* If yes it
+is the codec's allocation and forbidden; otherwise it is the caller's and permitted. Three
+shapes, decided:
+
+| code | who invokes it | helper? |
+|---|---|---|
+| a one-shot `encode()` convenience that allocates a scratch buffer and drives the encoder over it | the caller, which then calls the corelib | **yes** |
+| an id-keyed wrapper-array collector, growing the container as elements arrive (§7.2 item 8) | the visitor, from inside a callback | **yes** |
+| a private reassembly accumulator the codec grows and reads back from on the next `feed` | the codec itself, directly | **no — this is codec** (§6.6.2) |
+
+The third row is why a definition is needed at all: it ships in the same repository and looks
+like scratch storage, and a call-graph test cannot tell it from the second — which §7.2 item 8
+**requires**. A decoder that reaches directly into an allocating helper on its own path,
+without the caller ever being asked, is still in violation; what is no longer a violation is a
+**callback** being treated as a continuation of the codec's path.
+
+The first row also answers a question §5.1.2's *"the storage comes from the generated layer"*
+leaves open: a corelib **MAY** ship a one-shot `encode()` convenience. It is a helper, the
+codec keeps nothing of what it allocates, and §6.1 names the direct "power user" as an
+audience the corelib serves.
 
 **The generated layer allocates; the codec does not.** §5.1.2 states this for encode and it
 reads identically for decode: the generated object knows the schema, sizes and owns the
@@ -2394,8 +2423,9 @@ A new `corelib-<lang>` is conformant when:
       §6.6.2; where it does box them, an allocation count that **does not grow with the
       message**. Either way the result is itemised in the README and pinned by a test.
       Applies to the **codec**; the static helper layer beside it (ARCHITECTURE §8) is the
-      generated layer's and may allocate — but only where no codec path calls into it
-      (§6.6.1).
+      generated layer's and may allocate — the boundary being **ownership**, so a helper the
+      codec reaches only through a visitor callback is outside it, and one the codec calls
+      directly and reads back from is not (§6.6.1).
 - [ ] **Receiver-side limits present and finite** — `max_dyn_array_count`,
       `max_dyn_string_len`, `max_dyn_blob_len`, with no unset or unlimited state, supplied
       by generated code, enforced at the count/length header (for a sequence array, at the
