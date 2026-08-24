@@ -87,9 +87,10 @@ That constraint drives every other decision:
 * **The message never decides an allocation.** Memory a decode commits is sized by the
   caller or by a constant this document fixes — never by a number that arrived on the
   wire (§6.6). This is what lets a firmware target and a server target run the same code.
-* **Minimal overhead, one copy.** The codec writes into the buffer the caller installed
-  and copies each decoded value into the destination the caller supplied — never a borrowed
-  slice, never a view (§6.7). One memory model, on every path and in every language.
+* **Minimal overhead, one copy.** The codec writes into the buffer the caller installed,
+  and delivers each decoded value into the destination the caller supplied or through the
+  callback for the caller to copy — nothing it hands out survives the call (§6.7). One
+  memory model, on every path and in every language.
 * **A codec no message can make allocate, everywhere — not only where the target demands
   it.** Nothing the codec holds is sized by the wire (§6.6): it runs on caller-owned,
   fixed-size storage on a server exactly as on a microcontroller. Dynamic memory lives in
@@ -1651,13 +1652,23 @@ requires **both**:
   and unchanged by a hostile count or length. That is the property the prohibition is for,
   and it is what a port in such a language pins with a test.
 
-### 6.7 No views: the codec copies (normative)
+### 6.7 No value outlives the callback (normative)
 
-**A corelib MUST NOT expose a zero-copy view of any decoded value.** Every value the codec
-delivers is **copied into storage the caller supplied** — a `string`, a `blob`, a scalar, an
-array element alike — on the one-shot path exactly as on the streaming one. There is no
-payload-position getter, no borrowed slice, no "valid until the next feed" value, and no
-build option that reinstates one.
+**A corelib MUST NOT hand out a decoded value that outlives the callback it was delivered
+in.** The codec owns no storage, so it can make no promise about any: there is no
+payload-position getter, no "valid until the next feed" value, and no build option that
+reinstates one.
+
+**Exactly two routes carry a value to the caller**, both of them §6.6.3's:
+
+* the codec **writes into storage the caller holds**, supplied beforehand; or
+* the codec **passes the value through the callback** — the payload's total, this piece's
+  offset, and the bytes themselves — and the caller copies it where it belongs.
+
+**The second route is not a view.** What passes through are bytes the *caller* fed: the codec
+neither allocated nor owns them, and asserts nothing about how long they live. Validity ends
+when the callback returns, which §6.0's chunk lifetime already fixes; a caller that still
+needs the value copies it. The criterion is **outliving the call**, not pointing.
 
 An earlier revision let a port report a payload's byte position so that a caller could place
 a view over it. That is withdrawn, and the reason is the same one §6.6 rests on: **the caller
@@ -1989,13 +2000,16 @@ owns it, how long it must stay alive. Do **not** turn this into an API listing.
   installed buffer — pass-through is forbidden (§5.1.6) — so a reader writing a sink knows
   there is no second case to handle.
 * **Input buffer (decoding)** — who owns the bytes being parsed and how long they must
-  outlive the call. **There is nothing to choose here:** the codec always copies a decoded
-  value into storage the caller supplied, on the one-shot path exactly as on the streaming
-  one (§6.6). Say who owns the input bytes and until when; do not restate the rule.
-* **No views** — say plainly that every decoded value is copied into the caller's
-  destination and that nothing the decoder produces aliases the input, on the one-shot path
-  as on the streaming one (§6.7). A port has nothing to qualify here; if a README describes
-  a borrowed value, either the README or the port is wrong.
+  outlive the call. **There is nothing to choose here:** no wire value sizes an allocation
+  in the codec, on the one-shot path exactly as on the streaming one (§6.6). Say who owns
+  the input bytes and until when; do not restate the rule.
+* **Nothing outlives the call** — say plainly which of §6.7's two routes this port uses
+  (a destination the caller supplies, bytes passed through the callback, or one per value
+  kind), and that **whatever the callback receives is valid only until it returns** — a
+  caller that keeps the value copies it first. On the one-shot path exactly as on the
+  streaming one (§6.7.1). What a README **MUST NOT** describe is a value the caller may
+  read *after* the call that delivered it: no payload position, no "valid until the next
+  feed". If a README offers one, either the README or the port is wrong.
 
 State plainly that **no wire value decides an allocation in the codec** (§6.6) — including
 that there is no library-owned accumulator for chunk-straddling fields — and where the
@@ -2386,10 +2400,13 @@ A new `corelib-<lang>` is conformant when:
       `max_dyn_string_len`, `max_dyn_blob_len`, with no unset or unlimited state, supplied
       by generated code, enforced at the count/length header (for a sequence array, at the
       element index) before any allocation, and **rejected, never clamped** (§6.2.1).
-- [ ] **No views (§6.7)** — the codec exposes no zero-copy view, no payload-position
-      getter and no borrowed value, on the one-shot path as on the streaming one. Every
-      decoded value is copied into the caller's destination. Proven by scrubbing the
-      one-shot buffer after `decode` returns (§7.2 item 4).
+- [ ] **No value outlives its callback (§6.7)** — the codec exposes no payload-position
+      getter and no "valid until the next feed" value, on the one-shot path as on the
+      streaming one. Each value reaches the caller by one of §6.7's two routes — written
+      into the destination the caller supplied, or passed through the callback for the
+      caller to copy — and nothing it hands over stays readable after the call returns.
+      Proven by scrubbing every fed chunk, **and** the one-shot buffer, after the call
+      returns (§7.2 item 4).
 - [ ] **Exactly two per-field intents** — `read` and `skip`, never a third. There is no
       `examine`, because with views gone a wanted field is always read and therefore always
       validated (§6.7.2).
