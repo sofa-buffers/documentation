@@ -607,6 +607,14 @@ conformance — including a scalar value that exceeds its declared width — is 
 wire-type question and is outside this clause; it is a schema-bound validity check,
 handled as `INVALID` under §7.1.
 
+**It reaches only subtypes the format admits.** A **fixlen array** whose `fixlen_word`
+subtype is `string` or `blob` is not a mismatch this clause can resolve: CORELIB_PLAN §4.8
+admits no such field, so there is no declared type it could contradict and no schema that
+could have asked for it. Those bytes are malformed regardless of the schema — `INVALID`
+per CORELIB_PLAN §5.2.2, decided before this clause is reached (CORELIB_PLAN §4.8.1 step
+3). A **format** violation is never routed to the skip; only a well-formed field of the
+wrong declared type is.
+
 **Against a schema bound, this clause wins.** For a **fixlen array** the element count
 sits on the wire *before* the element subtype (CORELIB_PLAN §4.8), so a decoder that
 enforced its schema `count` (§7.1) as it read the count word would reject a field this
