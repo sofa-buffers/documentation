@@ -1353,7 +1353,7 @@ Both of these are now violations, and the second is the one ports got wrong:
 
 | shape | verdict |
 |---|---|
-| the codec calls its language's allocator, for anything at all | **violates** — regardless of what determined the size |
+| the codec calls its language's allocator, for anything at all | **violates** — regardless of what determined the size, with one narrow exception (§6.6.2) |
 | the codec calls nothing itself but **requires a growable destination** and grows it, from a wire count or otherwise | **violates** — it moved the allocator call one type away, where a source-level audit no longer sees it |
 
 **One-time construction is the boundary.** The codec's own fixed-size state has to live
@@ -1414,6 +1414,32 @@ it, and *that* is what makes them conformant. Being small is a consequence, not 
 This section **prescribes no design** for such state: a scalar shift register, a fixed
 array, a byte-at-a-time carry are all correct. A port picks what its language makes cheap.
 
+**Language-forced handles are the one exception.** Some languages will not let a codec
+express an operation at all without allocating an object first: the only bulk-copy or
+bulk-write primitive takes a *typed handle* — a view, a slice object, a span — instead of a
+pointer and a length; the only way to name a region of the caller's buffer is a wrapper over
+it; the runtime hands out no raw pointer to wrap in the first place. Where that is the case,
+a codec **MAY** allocate such a handle. The language is charging for the *mechanism*, and
+forbidding it would forbid the copy §6.7 requires — no port in that language could conform.
+
+Two properties make an object this exception rather than an ordinary violation:
+
+* **it carries no message bytes** — it addresses storage the caller supplied, or nothing at
+  all. A value the codec materialized into an object of its own is not a handle, whatever
+  its type;
+* **no wire number sizes it** — a handle over a thousand bytes costs what a handle over ten
+  costs. The message cannot choose how much is allocated, and that is the property §6.6
+  protects.
+
+Beyond those two this section **prescribes nothing**. How many such objects a port
+allocates, and whether it allocates one per call or keeps one and reuses it, is an
+optimization it makes for its language — not a conformance question. §6.7 is untouched
+either way: the handle is the codec's mechanism and never becomes a value the caller sees.
+
+What the port owes instead is visibility: the handles are **itemised in its README** (§9.6)
+and **pinned by a test**, so that an allocation nobody listed fails the measurement of
+§6.6.4 rather than hiding behind this paragraph.
+
 #### 6.6.3 Consequence for the callback surface
 
 A callback delivering a **materialized aggregate** — a whole `string`, a whole byte array, a
@@ -1437,10 +1463,11 @@ Source inspection alone is still **not sufficient**, because an indirect allocat
 caller-supplied container leaves no `malloc` in the source to find. Conformance therefore
 requires **both**:
 
-* **read** — no allocation primitive is reachable from a codec entry point;
+* **read** — no allocation primitive is reachable from a codec entry point, apart from the
+  language-forced handles §6.6.2 allows;
 * **measure** — an allocation count, or the heap high-water mark, over a complete encode and
   a complete decode, **measured after the codec's one-time construction**, which **MUST** be
-  zero (§13).
+  zero apart from those handles, which **MUST** be itemised (§13).
 
 ### 6.7 No views: the codec copies (normative)
 
@@ -2155,10 +2182,11 @@ A new `corelib-<lang>` is conformant when:
       the caller supplied — on either side, on any path, in any build configuration.
       Verified **both ways** (§6.6.4): no allocation primitive is reachable from a codec
       entry point, **and** an allocation count or heap high-water mark over a complete
-      encode and a complete decode is **zero**. Fixed-size working state bounded by this
-      document's constants is not allocation. Applies to the **codec**; the static helper
-      layer beside it (ARCHITECTURE §8) is the generated layer's and may allocate — but only
-      where no codec path calls into it (§6.6.1).
+      encode and a complete decode is **zero** — apart from the language-forced handles of
+      §6.6.2, which are itemised in the README and pinned by a test. Fixed-size working
+      state bounded by this document's constants is not allocation. Applies to the
+      **codec**; the static helper layer beside it (ARCHITECTURE §8) is the generated
+      layer's and may allocate — but only where no codec path calls into it (§6.6.1).
 - [ ] **Receiver-side limits present and finite** — `max_dyn_array_count`,
       `max_dyn_string_len`, `max_dyn_blob_len`, with no unset or unlimited state, supplied
       by generated code, enforced at the count/length header (for a sequence array, at the
