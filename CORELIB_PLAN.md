@@ -807,10 +807,16 @@ the language's conventions; **semantics are fixed**.
 
 | | value | note |
 |---|---|---|
-| namespace / module / crate / prefix | **`sofab`** | fixed. Not `SofaB`, not `Sofab`, not `sofabuffers`. |
-| package name in the registry (crates.io, PyPI, npm, Maven Central, …) | **`SofaBuffers`** | what users type in their manifest (`Cargo.toml`, `pyproject.toml`, `package.json`, …) |
+| namespace / module / crate / prefix | **`sofab`** | fixed, in **every** target. Not `SofaB`, not `Sofab`, not `sofabuffers`. |
+| package name in the registry (crates.io, PyPI, npm, Maven Central, …) | **ecosystem-idiomatic, derived** | the organization slug `sofa-buffers` and the word `corelib`, written in the registry's own convention, plus a variant suffix where one language ships more than one corelib (§9.8). |
 
-The two differ on purpose: users install `SofaBuffers` and import `sofab`.
+The namespace is the normative half: it is what user code reads, it is identical in every
+target, and a port that gets it wrong is not conformant. The registry name is **not** fixed
+by this document, because the registries do not admit one string — npm rejects uppercase in
+new package names, Maven Central has no single package name (a coordinate is
+`groupId:artifactId`), and a language shipping two corelibs cannot serve both from one name.
+A port **MUST** publish under a name derived as above and **MUST** state that name in its
+README (§9.2); it **MUST NOT** invent a brand of its own.
 
 **API version.** Expose a constant or getter returning the integer API version, currently
 **`1`** (§6.2). Callers and the generator use it to verify compatibility.
@@ -2116,8 +2122,9 @@ A new `corelib-<lang>` is conformant when:
 
 **Identity and API surface**
 
-- [ ] All public symbols live under the `sofab` namespace; the registry package is
-      `SofaBuffers` (§6).
+- [ ] All public symbols live under the `sofab` namespace; the registry package name is
+      derived in the registry's own convention from `sofa-buffers` + `corelib`, plus a
+      variant suffix where the language ships more than one corelib (§6).
 - [ ] API version constant/getter returns `1` (§6.2).
 - [ ] The generated-object surface uses only the closed name set of §6.1.1, and the
       streaming primitives suffice to build a thin generated layer whose one-shot
