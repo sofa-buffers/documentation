@@ -1165,8 +1165,17 @@ and they are why the duty is not a formality:
   calls `INVALID`. The disagreement is about the *verdict* on identical bytes.
 * **receive limit** — a message a conforming peer may legally emit is rejected. The bytes are
   fine; this build cannot take them.
-* **type loss** — whole wire types are neither written nor read. The widest break, and the one
-  a peer discovers only by sending.
+* **type loss** — whole wire types are neither written nor read. The widest break, because it
+  reaches **fields the build never reads**: the code that steps over a construct is the code
+  the switch removed, so an unknown id carrying one is rejected rather than skipped, and
+  MESSAGE_SPEC §7.3 cannot be honoured. Such a build talks only to peers that never emit the
+  construct **in any field**, including one a later schema revision adds.
+
+**Conformance is measured on the full build.** A variation may make the shared vectors
+(§7.1) undecodable — a 32-bit build cannot read their 64-bit values — so a port that ships
+one **MUST** still build and conformance-test the **unvaried** configuration in CI. §6.4
+already says this for `SOFAB_STRICT_UTF8`; it holds for every row above. A profile is a
+build a port offers, never the build it is judged by.
 
 **The duty is the price of the allowance.** A profile that takes a variation without stating
 it is not a footprint profile, it is an undocumented incompatibility — and the next port to
@@ -1174,8 +1183,8 @@ interoperate with it learns the bound by being rejected. §13 checks that every 
 port takes is stated.
 
 *(Not on this list: `MIN_OUTPUT_BUFFER` (§5.1.4), which runs the other way — there the
-constrained profile is the **stricter** one — and internal arithmetic-overflow assertions
-(§5.3.2), which change no byte a peer can observe.)*
+constrained profile is the **stricter** one — and build options no peer can observe at all:
+diagnostics, descriptor sizing, and everything above the codec line of §6.1.)*
 
 ### 6.3 Error Handling (normative)
 
