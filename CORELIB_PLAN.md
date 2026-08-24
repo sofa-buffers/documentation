@@ -650,7 +650,8 @@ The decoder uses a **push-feed / pull-read** model:
   notifies the **field handler** — the visitor, which is the only decode surface (§5.3.1).
 * **Pull** — the handler chooses per field:
   * **read** the value into a typed destination;
-  * **descend** into a nested sequence with a child handler, recursively;
+  * **descend** into a nested sequence, recursively — with a child handler or by flat
+    begin/end notification, whichever shape the port took (§6.0);
   * **skip** — the field's remaining bytes, or the whole sub-sequence, are consumed and
     discarded automatically as chunks arrive.
 
@@ -864,8 +865,19 @@ README (§9.2); it **MUST NOT** invent a brand of its own.
 * Per-field **read** into a typed destination, or **skip** — exactly these two intents,
   never a third (§6.7.2). With overloading a single `read(destination)` suffices; otherwise
   `read_<type>(destination)`.
-* **Descend** into nested sequences with a child handler (e.g. `read_sequence`), with
-  auto-skip of unread fields and whole sub-sequences.
+* **Descend** into nested sequences, with auto-skip of unread fields and of whole
+  sub-sequences. Two shapes are conformant and a port **MUST** implement one:
+  * a **child handler** — the visitor returns a handler for the nested level
+    (`read_sequence`, `BeginSequence`, `on_sequence_begin` → handler);
+  * **flat begin/end** — the visitor is notified that a level opened and closed, and tracks
+    its own depth.
+
+  They are functionally identical — same bytes, same outcomes, same auto-skip — and differ
+  only in which the language makes cheaper: handing back a borrowed handler per level is
+  natural in Go, Dart and Python, and awkward under Rust's borrow rules. What is normative
+  is the **capability**: a decoder **MUST** consume a nested sequence without the caller
+  parsing it, and **MUST** skip an unwanted sub-sequence whole. Neither shape is a second
+  decode surface (§5.3.1) — a child handler is part of the same visitor.
 
 **Chunk lifetime (normative).** A fed chunk is borrowed **only for the duration of the
 `feed` call**. Once `feed` returns, the caller may reuse, overwrite or free that memory and
@@ -1003,8 +1015,8 @@ person = dec.value                                   # assembled incrementally
   mechanism (§5.1), so `serialize` works with a buffer smaller than the object;
 * let the generator drive decoding through the **push-feed + pull-read / visitor**
   mechanism (§5.2), so a generated decoder consumes arbitrarily small chunks, binds each
-  field straight into the object's member, descends into nested objects via
-  `read_sequence`, and resumes a half-built object across chunk boundaries.
+  field straight into the object's member, descends into nested objects by either shape of
+  §6.0, and resumes a half-built object across chunk boundaries.
 
 #### 6.1.1 Canonical names for the generated-object layer (normative)
 
