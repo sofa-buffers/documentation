@@ -1144,6 +1144,12 @@ restate their reasoning.
 A build option that fails the gate is not a profile choice, it is a non-conformance. A
 variation this document does not name is judged by these same three conditions.
 
+**A variation need not be selectable.** Where a port is built one way permanently — a
+heap-free encoder whose hold-back run is a fixed array below `MAX_DEPTH`, with no knob to
+raise it — the duty is the same. What carries it is the **departure from the full profile**,
+not whether a user can undo it; a port that offers no switch at all can still owe every row
+of the table.
+
 **The variations, and what each costs a peer.**
 
 | variation | defined in | severity | the README states |
@@ -2232,10 +2238,11 @@ A new `corelib-<lang>` is conformant when:
 - [ ] Sequence start/end framing, fresh ID scope, single-byte `0x07` end, id discarded but
       still bounded by `ID_MAX`, skip-by-walking with depth tracking, rejection past
       `MAX_DEPTH` = 255 (§4.9).
-- [ ] **Every build-time variation the port ships passes the §6.2.2 gate** — it buys
-      footprint, it emits nothing outside §4 — **and is stated in the README's build
-      section** (§9.7) with the numbers it chose and what a conforming peer may send that
-      the build cannot consume. A port that ships none takes this item trivially.
+- [ ] **Every §6.2.2 variation the port ships — selectable or built in — passes the gate**
+      (it buys footprint, it emits nothing outside §4) **and is stated in the README's build
+      section** (§9.7), with the numbers it chose and what a conforming peer may send that
+      the build cannot consume. A port that departs from the full profile in no way at all
+      takes this item trivially.
 
 **Encoding**
 
