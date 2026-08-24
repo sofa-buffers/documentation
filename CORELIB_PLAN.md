@@ -383,12 +383,23 @@ the **format** bounds the count, the **schema** bounds the array. A decoder ther
    and committing no memory on the strength of that count before it has been checked
    (§6.2.1);
 2. reads the `fixlen_word`, obtaining subtype and per-element length;
-3. if the subtype **contradicts** the declared element type, **skips** the field per
-   MESSAGE_SPEC §7.3 — `element_count × element_length` bytes — leaving the declared field
-   at its default. The schema `count` **MUST NOT** be applied: the field was never this
-   array's value, so its element count is not this array's count;
-4. otherwise applies the **schema** `count` bound (MESSAGE_SPEC §7.1): an `element_count`
+3. rejects the field as **`INVALID`** if that subtype is anything other than `fp32` or
+   `fp64` — a `string` or `blob` subtype, or a reserved one — before any schema is
+   consulted (§4.8, §5.2.2);
+4. if the subtype is fixed-width but **contradicts** the declared element type, **skips**
+   the field per MESSAGE_SPEC §7.3 — `element_count × element_length` bytes — leaving the
+   declared field at its default. The schema `count` **MUST NOT** be applied: the field was
+   never this array's value, so its element count is not this array's count;
+5. otherwise applies the **schema** `count` bound (MESSAGE_SPEC §7.1): an `element_count`
    above the declared `count` is `INVALID`.
+
+**Steps 3 and 4 are different verdicts on different questions, and their order is
+normative.** Step 3 is a **format** violation: §4.8 admits no fixlen array of `string` or
+`blob`, so no schema could have declared one, and the bytes are malformed regardless of what
+follows — §5.2's own test for `INVALID`. Step 4 is a **schema** mismatch: an `fp64` array
+where the schema declared `fp32` is a perfectly well-formed field, merely not this one, which
+is why MESSAGE_SPEC §7.3 skips it. Routing step 3 into the skip would let a decoder accept a
+construct the format does not have.
 
 This order costs nothing: a fixlen array cannot be skipped at all without the
 `fixlen_word`, because the payload length is `element_count × element_length`. A
@@ -681,13 +692,22 @@ This list is referenced from everywhere else in this document; it is not restate
 | an **id**, length or count above its format ceiling | §6.2 |
 | a reserved fixlen subtype `0x4`–`0x7` | §4.6 |
 | an `fp32`/`fp64` fixlen whose declared length is not exactly 4 / 8 | §4.6 |
+| a fixlen **array** whose `fixlen_word` subtype is not `fp32`/`fp64` | §4.8, §4.8.1 |
 | nesting past `MAX_DEPTH` | §4.9 |
 | a sequence-end marker with no open sequence | §4.9 |
 | an element count above the declared schema `count` | MESSAGE_SPEC §7.1 |
 | an invalid-UTF-8 `string` payload **that is read**, with the strict check enabled | §6.4 |
+| a field whose **wire type this build does not carry** — on a reduced profile only | §6.2.2 |
 
 Two things are deliberately **not** on this list: a **non-minimal varint** (§4.1.2,
 normalized away) and a **receiver-cap rejection** (§6.2.1, a policy category of its own).
+
+**The last row is the one condition that is not format-wide.** Every other row holds for
+every conforming build; that one holds only where a profile compiled a wire type out
+(§6.2.2, *type loss*), and it is on the list because such a build **cannot** skip the
+construct instead — the code that steps over it is the code the switch removed. A decoder
+that let the field pass would desynchronize on the very next byte. A full build never
+reaches this row.
 
 #### 5.2.3 Precedence: `INVALID` wins over `INCOMPLETE` (normative)
 
@@ -1181,9 +1201,10 @@ and they are why the duty is not a formality:
   fine; this build cannot take them.
 * **type loss** — whole wire types are neither written nor read. The widest break, because it
   reaches **fields the build never reads**: the code that steps over a construct is the code
-  the switch removed, so an unknown id carrying one is rejected rather than skipped, and
-  MESSAGE_SPEC §7.3 cannot be honoured. Such a build talks only to peers that never emit the
-  construct **in any field**, including one a later schema revision adds.
+  the switch removed, so an unknown id carrying one is **`INVALID`** (§5.2.2) rather than
+  skipped, and MESSAGE_SPEC §7.3 cannot be honoured — letting the field pass would
+  desynchronize the decode on the next byte. Such a build talks only to peers that never
+  emit the construct **in any field**, including one a later schema revision adds.
 
 **Conformance is measured on the full build.** A variation may make the shared vectors
 (§7.1) undecodable — a 32-bit build cannot read their 64-bit values — so a port that ships
