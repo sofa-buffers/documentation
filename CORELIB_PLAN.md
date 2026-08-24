@@ -784,7 +784,8 @@ These concern the **encoder** and the build, not the decode surface:
 * **Heap-free build** — required of the codec everywhere (§6.6); on targets that can go
   further, extend it to the whole library.
 * **Feature flags / build options** — disable fixlen, fp64, array or sequence support and
-  integer-overflow checks, to shrink footprint.
+  integer-overflow checks, or narrow the scalar value width to 32-bit, to shrink footprint.
+  A narrowed width lowers `ID_MAX` and the value domain with it, on the terms of §6.2.
 * **Native-acceleration readiness** for scripting languages — a pure-language implementation
   is a valid start, but isolate the hot-path primitives (varint encode/decode, buffer
   operations, header parsing) behind internal helpers, so they can be swapped for a native
@@ -1020,10 +1021,10 @@ words.
 | Constant | Value |
 |---|---|
 | `API_VERSION` | `1` |
-| `ID_MAX` / field ID range | `0 .. 2,147,483,647` (2³¹ − 1) |
+| `ID_MAX` / field ID range | `0 .. 2,147,483,647` (2³¹ − 1) — **lower on a narrowed-width profile** |
 | Unsigned value domain | 64-bit unsigned (`0 .. 2⁶⁴ − 1`) |
 | Signed value domain | 64-bit signed (`−2⁶³ .. 2⁶³ − 1`) |
-| Scalar value width | 64-bit by default |
+| Scalar value width | 64-bit by default — **may be 32-bit on constrained profiles** |
 | `FIXLEN_MAX` | up to 2,147,483,647 — **may be 65,535 on constrained profiles** |
 | `ARRAY_MAX` | up to 2,147,483,647 — **may be 65,535 on constrained profiles** |
 | `MAX_DEPTH` | 255 (maximum nested-sequence depth) |
@@ -1039,12 +1040,30 @@ per stream. The same allowance appears in §6.0.1 (hold-back depth) and §6.4
 implementations that disagree about such a bound disagree about **bytes**, not about
 validity. (§5.1.4 runs the other way — there the constrained profile is the strict one.)
 
-**`ID_MAX` binds every header without exception** — the value-bearing types, sequence
-*start*, and the **sequence-end** marker alike. That a sequence end's id is discarded
-(§4.9) does not exempt it. The ceiling is stated over headers, not over headers whose id a
-decoder happens to consult, which is what lets an implementation validate the id where it
-decodes the header — one unconditional comparison — instead of carrying a per-wire-type
-exception through every decode surface.
+**The narrowed scalar width.** By the same allowance, a profile built for 32-bit targets
+**MAY** build the scalar value type 32 bits wide, to keep 64-bit arithmetic off a machine
+that has none (§5.3.2). It carries the same duty to document what it chose, plus three
+consequences the build does **not** get to choose:
+
+* **`ID_MAX` shrinks with the width.** A field header is `(id << 3) | type` (§4.3),
+  accumulated in the scalar value type, so a build of width `N` **MUST** cap the field id at
+  the lower of the format ceiling and `(2ᴺ − 1) >> 3` — **536,870,911** at 32 bits. Leaving
+  `ID_MAX` at `2³¹ − 1` under a narrower accumulator is a defect, not a liberty: the encoder
+  truncates the id and reports success.
+* **Overflow is caught on both sides, never truncated.** A varint that does not fit the built
+  width is `INVALID` (§5.2.2) — the §4.1.3 test applied at `N`, on the encoding rather than
+  the decoded value — and an out-of-range id or value is `InvalidArgument` on encode (§6.3).
+* **The interoperability limit is stated.** A 64-bit peer may legally emit an id or a value
+  such a build cannot consume. That is an acceptable trade for a footprint profile only if
+  the profile **documents the ceilings it chose**, exactly as above.
+
+**`ID_MAX` binds every header** — the value-bearing types, sequence *start*, and the
+**sequence-end** marker alike. No **wire type** is exempt: that a sequence end's id is
+discarded (§4.9) does not exempt it. The ceiling is stated over headers, not over headers
+whose id a decoder happens to consult, which is what lets an implementation validate the id
+where it decodes the header — one unconditional comparison — instead of carrying a
+per-wire-type exception through every decode surface. A narrowed scalar width (above)
+changes the **number** in that comparison; it does not exempt any header from facing it.
 
 #### 6.2.1 Receiver-side technical limits (normative)
 
