@@ -1120,6 +1120,12 @@ the element **index**, checked before the container it indexes into is extended.
 **Rejected, never clamped.** Silently materializing `limit` elements where the wire said
 more is data corruption wearing a safety jacket.
 
+**A skipped field is never capped.** A limit bounds an allocation, and a field the handler
+skips allocates nothing — it is walked, not materialized (§6.7.2). A `max_dyn_*` limit
+**MUST NOT** be applied to it, so a decode that steps over an over-cap field it was never
+going to read stays `COMPLETE`. The check belongs at the count/length header of a field that
+is actually **read**.
+
 *(This is the receiver-capacity analogue of `MAX_DEPTH`: both cap what a receiver commits
 on untrusted input. `MAX_DEPTH` is a fixed format ceiling and its violation is malformed
 input; a `max_dyn_*` limit is deployment-configurable and its violation is not.)*
@@ -1204,7 +1210,7 @@ and idiom, keep the meanings. (The C/C++ reference exposes them as `sofab_ret_t`
 |---|---|
 | `None` / `OK` | Success. |
 | `BufferFull` | Output buffer overflowed during encoding. |
-| `InvalidArgument` | A field ID out of range, a scalar width that is not 1/2/4/8 bytes, a descriptor field type that does not exist — or, with the strict UTF-8 check ON, a `string` value that cannot be encoded as valid UTF-8 (§6.4). |
+| `InvalidArgument` | A field ID out of range, a scalar width that is not 1/2/4/8 bytes, a descriptor field type that does not exist, a **destination too short for the value it was handed** (§6.6.3) — or, with the strict UTF-8 check ON, a `string` value that cannot be encoded as valid UTF-8 (§6.4). |
 | `InvalidMessage` | Malformed message while decoding: any §5.2.2 condition. Corresponds to the `INVALID` decode outcome. **Truncation is not `InvalidMessage`** — but input that is *both* malformed and truncated is, by the precedence of §5.2.3. |
 | `LimitExceeded` | A configured receiver-side limit (§6.2.1) was exceeded on a schema-**unbounded** field. The message is **well-formed** — the same bytes decode under a looser limit — so this is **not** `InvalidMessage` and **not** the `INVALID` outcome. A terminal, receiver-local **policy** rejection. Never raised for a field the schema bounds. |
 
@@ -1229,6 +1235,22 @@ caller — a limit rejection means *"raise my limit or the sender must send less
 means *"these bytes are broken"*. **How** it is surfaced is left open: either a **fourth
 decode outcome**, or a terminal failure carrying the `LimitExceeded` code on the error
 channel. Either way it **MUST NOT** be reported as `InvalidMessage`.
+
+**Three ways a value can be refused, and only one means the bytes are bad (normative).**
+
+| the value | who knows | code |
+|---|---|---|
+| exceeds a bound the **schema** declares — `count`, `maxlen`, a declared integer width | generated code (MESSAGE_SPEC §7.1) | `InvalidMessage` |
+| exceeds a **configured receiver cap** on a schema-unbounded field (§6.2.1) | generated code | `LimitExceeded` |
+| broke neither, but does not fit the **destination the caller handed over** (§6.6.3) | the codec | `InvalidArgument` |
+
+The third is a mistake in the **call**, not a property of the message or of the deployment,
+and the other two codes each say something untrue about it. `InvalidMessage` would mark a
+well-formed message malformed — the same bytes decode for a caller who passes a larger
+destination, and no §5.2.2 condition is present. `LimitExceeded` would promise a limit to
+raise that was never configured. A port **MAY** refine it into a language-specific condition
+— a range or capacity error of its own — as long as that condition **refines
+`InvalidArgument`** rather than standing beside these five as a sixth category.
 
 **Extending the set.** This is the common baseline. Language- or platform-specific
 conditions **MAY** extend or refine it — an I/O error from a stream sink, an allocation
@@ -1547,7 +1569,9 @@ either:
 * **in pieces**, with the payload's total, this piece's offset, and the caller's own buffer
   as arguments; **or**
 * **into a destination the caller hands back** after being told the announced count, with
-  the codec refusing a destination too short rather than growing it.
+  the codec refusing a destination too short rather than growing it. That refusal is
+  **`InvalidArgument`** (§6.3): the message is well-formed and within every bound it
+  declares — what does not fit is the storage this caller offered.
 
 Scalar callbacks are unaffected: they carry a value, and a value is not storage.
 
@@ -1608,7 +1632,7 @@ There are exactly **two** per-field intents, and a port **MUST NOT** add a third
 | intent | codec | caller |
 |---|---|---|
 | **read** | materializes into the caller's destination, and validates | takes the value |
-| **skip** | neither materializes nor validates (§6.4.5) | ignores the field |
+| **skip** | neither materializes nor validates (§6.4.5), and is never capped (§6.2.1) | ignores the field |
 
 The `examine` intent of the earlier revision existed only to keep a *viewed* field from
 being routed through `skip` and thereby escaping UTF-8 validation. With views gone, a wanted
@@ -2313,6 +2337,10 @@ A new `corelib-<lang>` is conformant when:
       the language uses them by default, return codes / result objects otherwise. A
       type-mismatched read is a skip, not an error. `LimitExceeded` is kept distinguishable
       from `InvalidMessage` (§6.3).
+- [ ] The three refusal tiers of §6.3 are told apart on **every** aggregate surface —
+      schema bound → `InvalidMessage`, receiver cap → `LimitExceeded`, **destination too
+      short → `InvalidArgument`** — with `string`, `blob` and array agreeing, and a
+      language-specific range error refining `InvalidArgument` rather than replacing it.
 - [ ] UTF-8 string-validity contract per §6.4 — byte-container targets expose
       `SOFAB_STRICT_UTF8` (ON by default; constrained profiles may default OFF or compile it
       out), Unicode-string targets are always strict (option omittable), symmetric
