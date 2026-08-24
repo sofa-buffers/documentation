@@ -785,7 +785,8 @@ These concern the **encoder** and the build, not the decode surface:
   further, extend it to the whole library.
 * **Feature flags / build options** — disable fixlen, fp64, array or sequence support and
   integer-overflow checks, or narrow the scalar value width to 32-bit, to shrink footprint.
-  A narrowed width lowers `ID_MAX` and the value domain with it, on the terms of §6.2.
+  A narrowed width lowers `ID_MAX` and the value domain with it (§6.2). Every option here
+  that a peer can observe is a §6.2.2 variation and carries that section's duty.
 * **Native-acceleration readiness** for scripting languages — a pure-language implementation
   is a valid start, but isolate the hot-path primitives (varint encode/decode, buffer
   operations, header parsing) behind internal helpers, so they can be swapped for a native
@@ -913,7 +914,7 @@ produce is the canonical encoding of MESSAGE_SPEC §2.
 * A profile that exposes the trio only for generated-code consumers **MAY** make it a
   build option (the C reference gates it behind `SOFAB_DISABLE_LAZY_SEQ_SUPPORT`). Such a
   switch changes the context layout and **MUST** be configured identically for the library
-  and everything that includes it.
+  and everything that includes it. It is a §6.2.2 variation and is stated like any other.
 
 **How deep the hold-back reaches (normative).** The pending run grows with nesting.
 
@@ -924,8 +925,7 @@ produce is the canonical encoding of MESSAGE_SPEC §2.
   emitting the empty frame §2 would have omitted. That output is **well-formed and decodes
   to the same value** — it is the non-canonical form every decoder already accepts and
   normalizes — so the two profiles interoperate. What it is not is canonical.
-* A profile taking this allowance **MUST document the bound**: two encoders that disagree
-  about it disagree about **bytes**, not about validity.
+* A profile taking this allowance **MUST state the bound** it chose (§6.2.2).
 
 This is the same constrained-profile allowance as §6.2's, for the same reason: a bound that
 costs RAM per stream is a real cost on a target that has none to spare.
@@ -1035,10 +1035,9 @@ mechanism against a hostile sender — that is §6.2.1.
 
 **The constrained-profile allowance.** Where the table says *may be 65,535*, a profile
 built for constrained targets may lower the ceiling because carrying the full one costs RAM
-per stream. The same allowance appears in §6.0.1 (hold-back depth) and §6.4
-(`SOFAB_STRICT_UTF8`). A profile that takes it **MUST document what it chose**; two
-implementations that disagree about such a bound disagree about **bytes**, not about
-validity. (§5.1.4 runs the other way — there the constrained profile is the strict one.)
+per stream. It is one of the variations of §6.2.2, and carries that section's duty: a
+profile that takes it **MUST state both ceilings**. (§5.1.4 runs the other way — there the
+constrained profile is the strict one.)
 
 **The narrowed scalar width.** By the same allowance, a profile built for 32-bit targets
 **MAY** build the scalar value type 32 bits wide, to keep 64-bit arithmetic off a machine
@@ -1055,7 +1054,7 @@ consequences the build does **not** get to choose:
   the decoded value — and an out-of-range id or value is `InvalidArgument` on encode (§6.3).
 * **The interoperability limit is stated.** A 64-bit peer may legally emit an id or a value
   such a build cannot consume. That is an acceptable trade for a footprint profile only if
-  the profile **documents the ceilings it chose**, exactly as above.
+  the profile **states the width and the ceilings it chose** (§6.2.2).
 
 **`ID_MAX` binds every header** — the value-bearing types, sequence *start*, and the
 **sequence-end** marker alike. No **wire type** is exempt: that a sequence end's id is
@@ -1122,6 +1121,61 @@ more is data corruption wearing a safety jacket.
 *(This is the receiver-capacity analogue of `MAX_DEPTH`: both cap what a receiver commits
 on untrusted input. `MAX_DEPTH` is a fixed format ceiling and its violation is malformed
 input; a `max_dyn_*` limit is deployment-configurable and its violation is not.)*
+
+#### 6.2.2 What a profile may vary (normative)
+
+A port **MAY** ship a build that trades capability for footprint. This is the **single list**
+of those variations and the **single statement** of the duty that comes with them; the
+sections that define each variation do not restate the duty, and this section does not
+restate their reasoning.
+
+**The gate.** A variation is permitted only where all three hold:
+
+1. **It buys footprint on a constrained target** — RAM per stream, `.text`/`.rodata`, or
+   arithmetic the machine does not have. Convenience, taste and API preference are not
+   footprint.
+2. **What it emits stays structurally well-formed** — the framing, headers, varints and
+   lengths are exactly what a full build would produce, so every conforming decoder walks
+   the bytes. A profile may narrow what it *accepts*, and §6.4 lets one waive a *payload*
+   check; neither licenses a byte sequence outside §4.
+3. **The README states it** (§9.7) — the numbers chosen, and what a conforming peer may
+   legally send that this build cannot consume.
+
+A build option that fails the gate is not a profile choice, it is a non-conformance. A
+variation this document does not name is judged by these same three conditions.
+
+**The variations, and what each costs a peer.**
+
+| variation | defined in | severity | the README states |
+|---|---|---|---|
+| hold-back depth below `MAX_DEPTH` | §6.0.1 | byte divergence | the bound it chose |
+| lazy-sequence trio gated out | §6.0.1 | byte divergence | that the switch exists, and that it must match across the library and everything that includes it |
+| `FIXLEN_MAX` / `ARRAY_MAX` at 65,535 | §6.2 | receive limit | both ceilings |
+| scalar value width 32-bit | §6.2 | receive limit | the width, its `ID_MAX`, its value domain |
+| `SOFAB_STRICT_UTF8` OFF or compiled out | §6.4 | validation divergence | that it is a non-strict build |
+| `fp64`, fixlen, array or sequence support disabled | §5.3.2, §6.0 | type loss | which wire types the build does not carry |
+
+**The four severities are not interchangeable** — they are what the README has to convey,
+and they are why the duty is not a formality:
+
+* **byte divergence** — the build emits a well-formed, non-canonical form that every decoder
+  already accepts and normalizes. No peer is shut out; two encoders simply disagree about
+  **bytes**, not about validity.
+* **validation divergence** — the build accepts, and may itself emit, a payload a strict peer
+  calls `INVALID`. The disagreement is about the *verdict* on identical bytes.
+* **receive limit** — a message a conforming peer may legally emit is rejected. The bytes are
+  fine; this build cannot take them.
+* **type loss** — whole wire types are neither written nor read. The widest break, and the one
+  a peer discovers only by sending.
+
+**The duty is the price of the allowance.** A profile that takes a variation without stating
+it is not a footprint profile, it is an undocumented incompatibility — and the next port to
+interoperate with it learns the bound by being rejected. §13 checks that every variation a
+port takes is stated.
+
+*(Not on this list: `MIN_OUTPUT_BUFFER` (§5.1.4), which runs the other way — there the
+constrained profile is the **stricter** one — and internal arithmetic-overflow assertions
+(§5.3.2), which change no byte a peer can observe.)*
 
 ### 6.3 Error Handling (normative)
 
@@ -1219,9 +1273,10 @@ is already paid for by the mandatory transcode; for byte containers a proper val
 cheap next to decode itself.
 
 **Constrained/footprint profiles MAY default to OFF or compile the check out entirely**
-(zero `.text`/`.rodata` cost when OFF) — the constrained-profile allowance of §6.2. Such a
-build is a documented non-strict build, and the target's CI **MUST** still build and
-conformance-test the check-ON configuration.
+(zero `.text`/`.rodata` cost when OFF) — a §6.2.2 variation, so the README **MUST** say the
+build is non-strict: it accepts, and may itself emit, a `string` payload a strict peer
+rejects. The target's CI **MUST** still build and conformance-test the check-ON
+configuration.
 
 **Where the knob lives** (byte-container targets) follows where the corelib already keeps
 its configuration: *compile-time* (`#define`, a Zig build feature) for footprint targets;
@@ -1854,6 +1909,11 @@ parallel across ports.
 How to build the library and run the test suite, including the shared vectors from
 `assets/`. Keep it brief — the commands and a sentence each.
 
+This is also the README slot §6.2.2's duty refers to: where the port ships a **footprint
+profile**, list the build options, the numbers each one chose, and what a conforming peer
+may legally send that the build cannot consume. A port that ships no such option writes
+nothing here.
+
 ### 9.8 `## Benchmarks`
 
 How to run the `perf` and `bench` tools (§10) and **what each measures** (`perf` =
@@ -2163,6 +2223,10 @@ A new `corelib-<lang>` is conformant when:
 - [ ] Sequence start/end framing, fresh ID scope, single-byte `0x07` end, id discarded but
       still bounded by `ID_MAX`, skip-by-walking with depth tracking, rejection past
       `MAX_DEPTH` = 255 (§4.9).
+- [ ] **Every build-time variation the port ships passes the §6.2.2 gate** — it buys
+      footprint, it emits nothing outside §4 — **and is stated in the README's build
+      section** (§9.7) with the numbers it chose and what a conforming peer may send that
+      the build cannot consume. A port that ships none takes this item trivially.
 
 **Encoding**
 
