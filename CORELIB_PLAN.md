@@ -1049,7 +1049,9 @@ consequences the build does **not** get to choose:
   accumulated in the scalar value type, so a build of width `N` **MUST** cap the field id at
   the lower of the format ceiling and `(2ᴺ − 1) >> 3` — **536,870,911** at 32 bits. Leaving
   `ID_MAX` at `2³¹ − 1` under a narrower accumulator is a defect, not a liberty: the encoder
-  truncates the id and reports success.
+  truncates the id and reports success. The **constant the port exposes** carries the lowered
+  value as well — a caller who reads `ID_MAX` and is handed a ceiling the build cannot reach
+  has been told the wrong number.
 * **Overflow is caught on both sides, never truncated.** A varint that does not fit the built
   width is `INVALID` (§5.2.2) — the §4.1.3 test applied at `N`, on the encoding rather than
   the decoded value — and an out-of-range id or value is `InvalidArgument` on encode (§6.3).
