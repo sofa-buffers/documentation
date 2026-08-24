@@ -90,10 +90,10 @@ That constraint drives every other decision:
 * **Minimal overhead, one copy.** The codec writes into the buffer the caller installed
   and copies each decoded value into the destination the caller supplied — never a borrowed
   slice, never a view (§6.7). One memory model, on every path and in every language.
-* **A heap-free codec, everywhere — not only where the target demands it.** The codec
-  allocates nothing at all (§6.6): it runs on caller-owned, fixed-size storage on a server
-  exactly as on a microcontroller. Dynamic memory lives in the generated layer and in the
-  static helpers beside the codec, never inside it.
+* **A codec no message can make allocate, everywhere — not only where the target demands
+  it.** Nothing the codec holds is sized by the wire (§6.6): it runs on caller-owned,
+  fixed-size storage on a server exactly as on a microcontroller. Dynamic memory lives in
+  the generated layer and in the static helpers beside the codec, never inside it.
 * **Small-value bias.** Integers are varint-encoded, so common small values cost one
   byte. The 3-bit type tag is packed *into* the field-ID varint, so a typical small
   field header is a single byte.
@@ -766,8 +766,7 @@ decoded value into one of the object's own members and skips what it does not re
 
 * The primary consumer is **generated code** — objects whose members mirror the schema
   fields and already exist at decode time. Writing straight into a member the caller owns
-  needs no storage of its own, which is what makes the heap-free codec of §6.6 reachable at
-  all. A surface that hands back values it materialized has to build them somewhere.
+  needs no storage of its own, which is what makes §6.6 reachable at all. A surface that hands back values it materialized has to build them somewhere.
 * **Every additional surface is a second implementation of every rule in this document.**
   §6.5 already names the recurring defect: a guard added to one surface but not another. The
   same divergence has appeared in chunk handling, in UTF-8 validation and in skip behaviour,
@@ -1453,27 +1452,49 @@ scalar and an array position, across decode → re-encode **and** any materializ
 **every** decode surface. The SofaBuffers differential harness (Crucible) additionally
 checks that all language drivers agree bit-for-bit on every `fp32` NaN.
 
-### 6.6 Memory: the codec is heap-free (normative)
+### 6.6 Memory: the codec allocates no payload storage (normative)
 
-**A corelib's codec MUST be heap-free.** It performs **no** dynamic allocation of any kind:
-no `malloc`, `realloc`, `free`, `new`, `delete`, no allocator call, no growable container of
-its own, no arena, no scratch it sizes at run time — on either side, on any path, in any
-build configuration. Every byte it reads, writes or reports on lives in storage the
-**caller** supplied, or in **fixed-size state whose size this document fixes** (§6.6.2).
+**A corelib's codec MUST NOT allocate payload storage.** Payload storage is memory that
+holds message content, accumulates it, or is **sized from it**: input and output buffers,
+chunk copies, reassembly accumulators, and any destination sized from a wire count or a wire
+length. All of it belongs to the **caller** — no `malloc`, `realloc`, `new`, no growable
+container of its own, no arena, no scratch it sizes at run time, on either side, on any
+path, in any build configuration.
 
-This is stricter than the rule it replaces, and deliberately so. An earlier revision
-forbade only memory *whose size the message decides*, which left an implementation free to
-allocate as long as the number came from somewhere else. Two rules were then needed — one
-about the mechanism, one about the size's origin — and the second could only be checked by
-measurement. **One rule replaces both:** the codec does not allocate. A number that never
-reaches an allocator cannot be exploited by whoever chose it.
+**Bounded working state is permitted, and MUST be sized at construction.** State whose size
+a constant of *this document* caps — a parse stack, the `MAX_DEPTH` counter, the held-back
+header run (§6.0.1), a partial varint, the landing zone for a scalar split across a chunk
+boundary — exists so the caller's destination is written exactly once, complete (§6.6.2). It
+**MUST** be sized to its **full extent** when the codec is constructed. Growing it afterwards
+is forbidden even where the ceiling it grows towards is correct: a pending run that doubles
+as nesting deepens allocates on a `write` path, and that is what this section forbids.
 
-Both of these are now violations, and the second is the one ports got wrong:
+**Storage a runtime allocates to represent a value is not payload storage.** Where a
+language's 64-bit integer is an object — Kotlin's `Long` on a JavaScript target, every
+CPython `int` — the codec cannot compute a varint at all without one, and no design short of
+abandoning the language's integer type avoids it. Such an object is permitted: its size comes
+from the **type**, never from the wire, and it costs the same for a ten-byte message as for a
+ten-kilobyte one.
+
+**The test is one question.** *Can a sender make this allocation bigger by sending different
+bytes?* If yes, it is forbidden. If a constant of this document caps it, it is permitted —
+and belongs in the constructor. If its size is a property of the language's type system, it
+is not this section's business at all.
+
+**Why the rule names payload rather than allocation.** An earlier revision forbade the
+*mechanism* — any allocator call at all — so that a second rule about where the size came
+from would not be needed. That is unsatisfiable on a runtime that boxes the values the codec
+computes, and unsatisfiable by no choice a port made. Naming payload storage restores the
+property this section actually protects — a **sender** cannot dictate a **receiver's**
+memory — and the second rule it needs is not a measurement but a **place**: bounded state is
+sized in the constructor, so a source-level audit still sees every allocation that matters.
+
+Two shapes are violations, and the second is the one ports got wrong:
 
 | shape | verdict |
 |---|---|
-| the codec calls its language's allocator, for anything at all | **violates** — regardless of what determined the size, with one narrow exception (§6.6.2) |
-| the codec calls nothing itself but **requires a growable destination** and grows it, from a wire count or otherwise | **violates** — it moved the allocator call one type away, where a source-level audit no longer sees it |
+| the codec allocates storage a **wire number sizes** — a count, a length, a payload | **violates**, on every path after construction |
+| the codec allocates nothing itself but **requires a growable destination** and grows it, from a wire count or otherwise | **violates** — it moved the allocator call one type away, where a source-level audit no longer sees it |
 
 **One-time construction is the boundary.** The codec's own fixed-size state has to live
 somewhere, and in a managed language the object holding it is itself heap-allocated.
@@ -1545,7 +1566,9 @@ Two properties make an object this exception rather than an ordinary violation:
 
 * **it carries no message bytes** — it addresses storage the caller supplied, or nothing at
   all. A value the codec materialized into an object of its own is not a handle, whatever
-  its type;
+  its type. (Nor is a **boxed scalar** the runtime creates to hold a value the codec is
+  computing — that is not payload storage at all, and §6.6 permits it outright, without
+  needing this exception.);
 * **no wire number sizes it** — a handle over a thousand bytes costs what a handle over ten
   costs. The message cannot choose how much is allocated, and that is the property §6.6
   protects.
@@ -1587,8 +1610,13 @@ requires **both**:
 * **read** — no allocation primitive is reachable from a codec entry point, apart from the
   language-forced handles §6.6.2 allows;
 * **measure** — an allocation count, or the heap high-water mark, over a complete encode and
-  a complete decode, **measured after the codec's one-time construction**, which **MUST** be
-  zero apart from those handles, which **MUST** be itemised (§13).
+  a complete decode, **measured after the codec's one-time construction**. Where the runtime
+  does not box the codec's values it **MUST** be **zero**, apart from those handles, which
+  **MUST** be itemised (§13). Where it does box them the count is never zero and demanding
+  zero would demand the impossible, so the measurable claim is that it **does not grow with
+  the message**: the same for a ten-byte and a ten-kilobyte payload of the same field shape,
+  and unchanged by a hostile count or length. That is the property the prohibition is for,
+  and it is what a port in such a language pins with a test.
 
 ### 6.7 No views: the codec copies (normative)
 
@@ -2309,16 +2337,18 @@ A new `corelib-<lang>` is conformant when:
 
 **Memory**
 
-- [ ] **The codec is heap-free (§6.6)** — no `malloc`/`realloc`/`free`, no `new`/`delete`,
-      no allocator call, no growable container of its own, and no growing of a destination
-      the caller supplied — on either side, on any path, in any build configuration.
-      Verified **both ways** (§6.6.4): no allocation primitive is reachable from a codec
-      entry point, **and** an allocation count or heap high-water mark over a complete
-      encode and a complete decode is **zero** — apart from the language-forced handles of
-      §6.6.2, which are itemised in the README and pinned by a test. Fixed-size working
-      state bounded by this document's constants is not allocation. Applies to the
-      **codec**; the static helper layer beside it (ARCHITECTURE §8) is the generated
-      layer's and may allocate — but only where no codec path calls into it (§6.6.1).
+- [ ] **The codec allocates no payload storage (§6.6)** — nothing a wire count, length or
+      payload sizes; no growable container of its own; no growing of a destination the
+      caller supplied — on either side, on any path, in any build configuration. Bounded
+      working state is sized **at construction**, never grown on a `write` or `feed` path.
+      Verified **both ways** (§6.6.4): no allocation primitive a wire number could size is
+      reachable from a codec entry point, **and** the measurement — zero allocations where
+      the runtime does not box the codec's values, apart from the language-forced handles of
+      §6.6.2; where it does box them, an allocation count that **does not grow with the
+      message**. Either way the result is itemised in the README and pinned by a test.
+      Applies to the **codec**; the static helper layer beside it (ARCHITECTURE §8) is the
+      generated layer's and may allocate — but only where no codec path calls into it
+      (§6.6.1).
 - [ ] **Receiver-side limits present and finite** — `max_dyn_array_count`,
       `max_dyn_string_len`, `max_dyn_blob_len`, with no unset or unlimited state, supplied
       by generated code, enforced at the count/length header (for a sequence array, at the
