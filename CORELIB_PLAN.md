@@ -662,7 +662,8 @@ message and binds output storage lazily, per field.
 *Terminology:* "pull-read" names what happens **inside the visitor callback** — the handler
 pulls the value into its own destination. It is not a pull-parser *surface*, which §5.3.1
 forbids: the codec still drives, and the handler is called; nothing outside the visitor
-iterates the message.
+iterates the message. A value the codec writes into a destination the handler declared **in
+advance** is pull-reading too — the handler chose the destination, only earlier (§5.3.1).
 
 #### 5.2.1 Decode outcome: three values, no finalize step (normative)
 
@@ -783,6 +784,38 @@ decoded value into one of the object's own members and skips what it does not re
 * A port **MUST NOT** offer any second decode surface: no pull-parser, no iterator or
   `next()`-style API, no cursor, no convenience wrapper that decodes by another route. This
   holds for constrained targets too; there is no embedded exemption.
+
+**What makes two surfaces, and what does not (normative).** The test is whether a second
+**implementation of this document's rules** exists — not whether a value reaches the caller by
+a second mechanism. A port has one surface when, for every field:
+
+* the codec drives the walk and nothing outside the handler iterates the message; **and**
+* every rule this document states — the receiver caps (§6.2.1), the schema bound (§6.2.1,
+  MESSAGE_SPEC §7.1), the type-mismatch skip (MESSAGE_SPEC §7.3), payload validation (§6.4), a
+  declared element width (§4.8.1), and the resume transaction (§5.2) — has **exactly one
+  implementation**, which runs for every field whatever route its value takes afterwards.
+
+Under that test, a **destination the handler declares** is not a second surface. §6.6.3 already
+has the per-field form: naming a buffer in `on_array_begin` / `on_string_begin` /
+`on_blob_begin` suppresses the typed callback for that field, and that is not a second surface.
+A port **MAY** also let a handler declare its destinations **once, before the decode begins** —
+a field-id → slot table — which is the same choice made once instead of per field. Both say
+*where* a value belongs; neither says *how* it is decoded, and a field the declaration does not
+cover reaches the typed hooks unchanged.
+
+Two obligations come with the once-declared form, and they are what keep it inside this section
+rather than beside it:
+
+* it is **reached through the handler** — declared by it, answered once when the decoder is
+  built. A port **MUST NOT** offer a decode entry point that takes such a table *instead of* a
+  handler;
+* the rules above stay **unduplicated**. A port that copies a bound check, a cap, a skip or a
+  validation into the declared-destination path has built the second implementation this clause
+  forbids, however the API looks.
+
+What remains forbidden is exactly what the list above names: a surface that **iterates** — a
+pull-parser, a cursor, a `next()` — and any route that reaches a value through code deciding
+*whether* or *how* to decode it a second time.
 
 *Why one surface, and why this one:*
 
@@ -1151,6 +1184,12 @@ the element **index**, checked before the container it indexes into is extended.
 
 **Rejected, never clamped.** Silently materializing `limit` elements where the wire said
 more is data corruption wearing a safety jacket.
+
+**How a handler states a schema bound is its own choice; how the codec applies it is not.** A
+per-field callback and an entry in a destination the handler declared in advance (§5.3.1) are
+both ways of saying the same number. The rule that **applies** it **MUST** have one
+implementation whichever way it was stated — this is exactly where two routes have been
+observed to drift apart, and §5.3.1's test is written over it.
 
 **A skipped field is never capped.** A limit bounds an allocation, and a field the handler
 skips allocates nothing — it is walked, not materialized (§6.7.2). A `max_dyn_*` limit
@@ -1657,7 +1696,12 @@ either:
 * **into a destination the caller hands back** after being told the announced count, with
   the codec refusing a destination too short rather than growing it. That refusal is
   **`InvalidArgument`** (§6.3): the message is well-formed and within every bound it
-  declares — what does not fit is the storage this caller offered.
+  declares — what does not fit is the storage this caller offered; **or**
+* **into a destination the caller declared before the decode began** — a field-id → slot table
+  (§5.3.1) — which is the bullet above with the choice made once instead of per field. The
+  codec's obligations are identical: the announced count or length is settled against what the
+  schema declares first, a destination too short is **`InvalidArgument`**, and it is never
+  grown.
 
 Scalar callbacks are unaffected: they carry a value, and a value is not storage.
 
@@ -2410,6 +2454,13 @@ A new `corelib-<lang>` is conformant when:
       without objects, as callbacks with a context pointer), and **no port offers a second
       one**: no pull-parser, iterator, cursor, or convenience wrapper that decodes by another
       route. No exemption for constrained targets (§5.3.1).
+- [ ] **One implementation of every rule** — the receiver caps, the schema bound, the
+      MESSAGE_SPEC §7.3 type-mismatch skip, payload validation, declared element widths and the
+      resume transaction each exist **once**, and run for every field whatever route its value
+      takes afterwards (§5.3.1). Where the port lets a handler **declare destinations** — per
+      field (§6.6.3) or once for the whole message — the declaration is reached **through** the
+      handler, and a test pins that a declared destination and a typed callback reach the same
+      verdict on the same bytes under the same receiver limits.
 
 **Memory**
 
