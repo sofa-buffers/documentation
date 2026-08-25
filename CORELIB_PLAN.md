@@ -1160,7 +1160,9 @@ SofaBuffers ARCHITECTURE §9.5 owns the rest.
 * for a **sequence array** it surfaces the **index** of the element in hand — a wrapper
   array's length is *highest present id + 1* (MESSAGE_SPEC §5.1), so the index is what has
   to be checked, there being no count header to check;
-* the visitor decides. The codec never invents a limit of its own and never clamps to one.
+* the visitor decides **which numbers apply** — and, where a corelib takes them as
+  arguments, it may be the one that performs the comparison (below). The codec never
+  invents a limit of its own, never defaults one, and never clamps to one.
 
 **These limits are configuration, not schema:**
 
@@ -1184,6 +1186,34 @@ the element **index**, checked before the container it indexes into is extended.
 
 **Rejected, never clamped.** Silently materializing `limit` elements where the wire said
 more is data corruption wearing a safety jacket.
+
+**Passing a limit in is not the codec holding one (normative).** The **provenance** of the
+number is fixed above; the **site of the comparison** is not. A corelib **MAY** take a limit
+as an argument and perform the check itself, and a port that does is conformant.
+
+* The number is the **caller's**: supplied per call or per decode, used for that one
+  comparison, and **not retained**.
+* A codec **MUST NOT** hold a limit of its own, **MUST NOT** supply a default for one it was
+  not given, **MUST NOT** read an omitted argument as *unlimited*, and **MUST NOT** clamp to
+  one. A format ceiling (§6.2) reached because no cap was stated is the **format's** bound,
+  not a receiver cap, and a port **MUST NOT** present it as one.
+* Stating the limit stays generated code's duty. "No unset state and no unlimited mode"
+  above binds the layer that **supplies** the number, not the signature that carries it — so
+  an argument a caller may omit is an API affordance, never a licence to decode uncapped.
+  The strictest form, and the recommended one, makes the argument **required**.
+
+**Why that is the better site, not merely a permitted one.** The check must run at the
+count/length header (above) **and** behind the MESSAGE_SPEC §7.3 tag test, because a field
+whose wire type contradicts the declared one is skipped, and a skipped field is never capped
+(below). On most surfaces only the codec can see the tag before the destination is bound, so
+a caller checking *in front of* its own read caps exactly the field it was required to skip.
+Handing the number in puts the check where both conditions already hold, and makes them a
+property of the structure rather than of every caller's discipline.
+
+**One implementation, wherever it runs.** A port whose codec offers the check **MUST NOT**
+also emit it into the generated layer, and a port that enforces it in generated code
+**MUST NOT** ask the codec to enforce it too. Two routes to one rule is the divergence
+§5.3.1's test is written over, and the receiver caps are named in it.
 
 **How a handler states a schema bound is its own choice; how the codec applies it is not.** A
 per-field callback and an entry in a destination the handler declared in advance (§5.3.1) are
@@ -2480,7 +2510,9 @@ A new `corelib-<lang>` is conformant when:
 - [ ] **Receiver-side limits present and finite** — `max_dyn_array_count`,
       `max_dyn_string_len`, `max_dyn_blob_len`, with no unset or unlimited state, supplied
       by generated code, enforced at the count/length header (for a sequence array, at the
-      element index) before any allocation, and **rejected, never clamped** (§6.2.1).
+      element index) before any allocation, and **rejected, never clamped** (§6.2.1). The
+      comparison **MAY** run inside a codec that was handed the number — checked once,
+      never held, never defaulted, and never in both layers at once.
 - [ ] **No value outlives its callback (§6.7)** — the codec exposes no payload-position
       getter and no "valid until the next feed" value, on the one-shot path as on the
       streaming one. Each value reaches the caller by one of §6.7's two routes — written
