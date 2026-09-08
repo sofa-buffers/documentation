@@ -37,7 +37,7 @@ What you write in a schema, and what it becomes on the wire. Several schema type
 | `i8` `i16` `i32` `i64` | signed integer | zig-zag |
 | `boolean` | unsigned integer | `0` or `1` |
 | `enum` | signed integer | the member's value; the declared constants bound it — an undeclared value is invalid |
-| `bitfield` | unsigned integer | the flags packed into one value |
+| `bitfield` | unsigned integer | the flags packed into one value; the declared bits bound it — an undeclared bit is invalid |
 | `fp32` `fp64` | fixlen | 4 / 8 raw IEEE-754 bytes |
 | `string` | fixlen | UTF-8, no terminator |
 | `blob` | fixlen | opaque bytes |
