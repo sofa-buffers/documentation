@@ -686,6 +686,29 @@ distinctly and **MUST NOT** fold it into either neighbour:
 * folding into `INVALID` (rejecting a stream merely split across chunks, or a prefix the
   caller may still extend) is non-conformant.
 
+**How an outcome is delivered (normative).** `COMPLETE` and `INCOMPLETE` **MUST** be
+**returned** by `feed`/`decode`. `INVALID` **MAY** instead be reported as a **failure of
+the operation** — thrown, returned as an `Err`, or carried as an error code, whichever the
+language provides for that — **provided** the report carries the `InvalidMessage` code
+(§6.3) and the caller learns the result at **every** `feed`, without consulting a second
+place. This is the latitude §6.3 already grants `LimitExceeded`, applied to the one
+outcome that is likewise terminal: `INVALID` ends the decode, so a language that has a
+channel for "this operation failed" may use it.
+
+Three things the clause deliberately does **not** permit:
+
+* **Only `INVALID` may change channel.** `INCOMPLETE` is not an error (above) and **MUST
+  NOT** be delivered as one — not as a thrown exception, not as an `Err`, not as an error
+  code. A caller must be able to distinguish "give me more bytes" from "these bytes are
+  broken" without inspecting a message string.
+* **`COMPLETE` and `INCOMPLETE` are returned, not implied.** A `feed` that returns nothing
+  at all — leaving the caller to infer success from the absence of a failure — is
+  non-conformant: it cannot express `INCOMPLETE`, which is neither success nor failure.
+* **No second place to ask.** A `status()` accessor beside `feed`, or any other surface
+  holding a copy of the outcome, is not a conformant way to deliver one. Two answers to
+  the same question can disagree, and the outcome **MUST** reach the caller from the
+  `feed` that produced it.
+
 #### 5.2.2 What makes bytes `INVALID` (normative, the single list)
 
 This list is referenced from everywhere else in this document; it is not restated.
@@ -895,8 +918,9 @@ README (§9.2); it **MUST NOT** invent a brand of its own.
 **Decoder**
 
 * Initialize with a field handler: the **visitor** (§5.3.1), and no other surface.
-* `feed(bytes)` accepting arbitrarily small chunks, returning `COMPLETE` / `INCOMPLETE` /
-  `INVALID` (§5.2). **No** `finish`/`finalize` step.
+* `feed(bytes)` accepting arbitrarily small chunks, yielding `COMPLETE` / `INCOMPLETE` /
+  `INVALID` (§5.2) — the first two **returned**, `INVALID` returned or on the error
+  channel, per §5.2.1's delivery rule. **No** `finish`/`finalize` step.
 * Per-field **read** into a typed destination, or **skip** — exactly these two intents,
   never a third (§6.7.2). With overloading a single `read(destination)` suffices; otherwise
   `read_<type>(destination)`.
@@ -1318,11 +1342,12 @@ and idiom, keep the meanings. (The C/C++ reference exposes them as `sofab_ret_t`
 | `LimitExceeded` | A configured receiver-side limit (§6.2.1) was exceeded on a schema-**unbounded** field. The message is **well-formed** — the same bytes decode under a looser limit — so this is **not** `InvalidMessage` and **not** the `INVALID` outcome. A terminal, receiver-local **policy** rejection. Never raised for a field the schema bounds. |
 
 **Decode outcome vs. error code.** A decoder's per-`feed`/`decode` result is the
-three-valued **outcome** (§5.2), *not* a code from this table. `INVALID` corresponds to
-`InvalidMessage`. `INCOMPLETE` is **not** an error and **MUST NOT** be reported as
-`InvalidMessage`; it is surfaced to the caller, who judges it per its own framing, and
-there is no `finish` step that converts it (§5.2.4). This table covers the *other* fallible
-operations — encoding and argument checks.
+three-valued **outcome** (§5.2), *not* a code from this table — except that `INVALID`
+**MAY** be delivered on the error channel carrying `InvalidMessage`, which §5.2.1 permits
+and bounds. `INVALID` corresponds to `InvalidMessage`. `INCOMPLETE` is **not** an error
+and **MUST NOT** be reported as `InvalidMessage`; it is surfaced to the caller, who judges
+it per its own framing, and there is no `finish` step that converts it (§5.2.4). This table
+covers the *other* fallible operations — encoding and argument checks.
 
 **A type-mismatched read is not an error at all.** Binding a read whose declared type
 contradicts the wire is the MESSAGE_SPEC §7.3 case: the field **MUST** be skipped like an
