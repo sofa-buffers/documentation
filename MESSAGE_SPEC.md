@@ -76,7 +76,7 @@ bound of the *field* — a value inside that range which the schema does not dec
 interval, and it is stated here because §7.1's list of bounds is otherwise about
 widths and lengths.
 
-Two consequences follow, both deliberate:
+Three consequences follow, all deliberate:
 
 * **Adding a constant to an enum is a breaking schema change.** A receiver built on
   the older schema rejects a message carrying the new value rather than storing
@@ -89,6 +89,18 @@ Two consequences follow, both deliberate:
   receiver **MAY** store an enum in the smallest integer type that holds every
   constant, and a footprint target does. The format never obliges it to reserve a
   wider one for a value it must reject anyway.
+* **A field's default must be a value the enum admits.** §2 initializes every field
+  to its schema `default`, or to *the type's zero value* when none is given, and a
+  sparse encoder omits the field at exactly that value — so absence reconstructs it on
+  every receiver. Closing the enum makes that fallback a schema question: an `enum`
+  field **MUST** either declare a `default` naming one of the enum's constants, or
+  belong to an enum that declares a constant with the value `0`. An enum
+  `{RED = 1, GREEN = 2}` whose field declares no `default` is **not** a valid schema —
+  its fields would initialize to `0`, a value the enum itself rejects. This is a
+  schema-validity rule (§6), not a decode check: no such value ever reaches the wire,
+  precisely because the field is omitted at its default. A `bitfield` needs no
+  counterpart clause — its zero value is the "no flags set" combination and is always
+  valid.
 
 **A `bitfield` is closed too, by its bits (normative).** Its bound is the **mask of
 the positions the schema declares**: a wire value `v` is valid exactly when
@@ -589,21 +601,23 @@ This document adds only the obligations on **generated code**:
   schema-bound violations are detected — and reported — by generated code: a wire
   element count `M > N` on a `count`-bounded array (§3), a wrapper-array element id
   `≥ N` (§5.1), a `string`/`blob` whose wire byte length exceeds its schema
-  `maxlen` (§1), or an **integer scalar whose wire value exceeds its declared
-  width** (§1). Each is malformed input and **MUST** be reported as `INVALID`,
-  the same terminal outcome as the corelib's own (CORELIB_PLAN §5.2) — never as
-  `INCOMPLETE`, never silently truncated to the bound, and (for a scalar) never
-  masked to its width. §7.1 states how far that binds.
+  `maxlen` (§1), an **integer scalar whose wire value exceeds its declared width**, an
+  **`enum` value the schema does not declare**, or a **`bitfield` value carrying an
+  undeclared bit** (§1). Each is malformed input and **MUST** be reported as
+  `INVALID`, the same terminal outcome as the corelib's own (CORELIB_PLAN §5.2) —
+  never as `INCOMPLETE`, never silently truncated to the bound, and never silently
+  masked: neither a scalar to its declared width nor a bitfield to its declared bits.
+  §7.1 states how far that binds.
 
 ### 7.1 A declared bound binds every target (normative)
 
 A schema `count: N` on an array, a `maxlen: L` on a `string`/`blob`, the **declared
-width** of an integer scalar (`u8`…`u64`, `i8`…`i64` — §1), the **declared
-constants** of an `enum` and the **declared bits** of a `bitfield` (§1) are
-**wire-validity bounds**, not sizing hints. They
-bind **every implementation, regardless of its allocation strategy**: a heap-less
-target that pre-sizes a buffer from the bound and a heap target that allocates per
-message **MUST both reject** input that exceeds it, with the same `INVALID` outcome.
+width** of an integer scalar (`u8`…`u64`, `i8`…`i64` — §1), the **declared constants**
+of an `enum` and the **declared bits** of a `bitfield` (§1) are **wire-validity
+bounds**, not sizing hints. They bind **every implementation, regardless of its
+allocation strategy**: a heap-less target that pre-sizes a buffer from the bound and a
+heap target that allocates per message **MUST both reject** input that exceeds it, with
+the same `INVALID` outcome.
 
 A decoder **MUST NOT** accept an over-bound value merely because its storage happens
 to be able to hold it — a `u8` field whose value arrives as `16383` is rejected even
@@ -645,9 +659,8 @@ type maps to **MUST** be **skipped**, exactly as a field with an unknown id is s
 NOT** decode its payload into the declared field.
 
 The check reaches exactly as far as the wire format distinguishes, and no further: `u8`,
-`u16`, `u32`, `u64`, `boolean` and `bitfield` all map to the unsigned-integer wire type,
-so a header carrying that type is well-formed for every one of them; an `enum` maps to
-the **signed**-integer wire type (§1, §4.5) and is well-formed for that one. Value-range
+`u16`, `u32`, `u64`, `boolean`, `enum` and `bitfield` all map to the unsigned-integer wire
+type, so a header carrying that type is well-formed for every one of them. Value-range
 conformance — including a scalar value that exceeds its declared width — is not a
 wire-type question and is outside this clause; it is a schema-bound validity check,
 handled as `INVALID` under §7.1.

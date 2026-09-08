@@ -302,7 +302,8 @@ integer.
 ```
 
 Decode the varint, then zig-zag-decode. Schema types that lower to a signed integer
-(enums, including their 32-bit range) are a message-layer concern (MESSAGE_SPEC §1).
+(enums, and what bounds their values) are a message-layer concern (MESSAGE_SPEC §1) —
+the wire type's own ceiling is §4.1.3's 64-bit bound and nothing narrower.
 
 ### 4.6 Fixlen Value (type `0b010`)
 
