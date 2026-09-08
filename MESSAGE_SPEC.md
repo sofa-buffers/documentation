@@ -44,7 +44,7 @@ header and marker bytes are never spelled out here — that's CORELIB_PLAN's job
 |-------------|--------------------------|-------|
 | `u8` `u16` `u32` `u64` | unsigned integer (§4.4) | one unsigned-integer wire type carries every width; the declared width is a **normative validity bound** on the value — a wire value outside its range is `INVALID` (§7.1) |
 | `i8` `i16` `i32` `i64` | signed integer (§4.5) | zig-zag; the declared width is a **normative validity bound** — a wire value outside its range is `INVALID` (§7.1) |
-| `boolean` | unsigned integer (§4.4) | no own wire type; encoded as `0`/`1` via the corelib bool helper |
+| `boolean` | unsigned integer (§4.4) | no own wire type; encoded as `0`/`1` via the corelib bool helper. Unlike `enum` and `bitfield` the value is **not** bounded — a decoder reads every non-`0` as `true` and normalizes it (CORELIB_PLAN §4.4, §4.1.2) |
 | `enum` | signed integer (§4.5) | no own wire type; carries the member's value. The **declared constants are a normative validity bound** — a value that is not one of them is `INVALID` (§7.1); the signed 32-bit range is the wire type's outer ceiling, not the field's bound |
 | `bitfield` | unsigned integer (§4.4) | no own wire type; flags packed by generated code at their `pos` bits. The **declared bits are a normative validity bound** — a value carrying a bit the schema does not declare is `INVALID` (§7.1) |
 | `fp32` | fixlen, subtype fp32 (§4.6) | |
