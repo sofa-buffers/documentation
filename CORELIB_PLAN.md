@@ -289,6 +289,14 @@ with value `0` or `1`.
   mapping.
 * On the wire the result is indistinguishable from an unsigned integer. `boolean true` at
   id `0` → `00 01`.
+* **Canonical on encode, tolerant on decode.** An encoder **MUST** write `true` as `1`.
+  A decoder **MUST** read **every value other than `0`** as `true`: such a value is
+  **not** `INVALID` (§5.2), it is normalized away, and a re-encode emits `1` — the same
+  bargain §4.1.2 strikes for a non-minimal varint. A boolean has only two meanings, so a
+  value the canonical form does not use still denotes one of them unambiguously; there is
+  nothing to reject, only something to normalize. (This is why a boolean is **not** bound
+  the way an `enum` or a `bitfield` is — MESSAGE_SPEC §1. There, every value carries a
+  meaning of its own, so an undeclared one carries none and **is** `INVALID`.)
 * The shared vectors carry a `boolean` op accordingly.
 
 Other schema types that lower to an unsigned integer (bitfields, flag sets) are a
