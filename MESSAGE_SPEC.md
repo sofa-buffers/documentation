@@ -659,8 +659,9 @@ type maps to **MUST** be **skipped**, exactly as a field with an unknown id is s
 NOT** decode its payload into the declared field.
 
 The check reaches exactly as far as the wire format distinguishes, and no further: `u8`,
-`u16`, `u32`, `u64`, `boolean`, `enum` and `bitfield` all map to the unsigned-integer wire
-type, so a header carrying that type is well-formed for every one of them. Value-range
+`u16`, `u32`, `u64`, `boolean` and `bitfield` all map to the unsigned-integer wire type,
+so a header carrying that type is well-formed for every one of them; an `enum` maps to
+the **signed**-integer wire type (§1, §4.5) and is well-formed for that one. Value-range
 conformance — including a scalar value that exceeds its declared width — is not a
 wire-type question and is outside this clause; it is a schema-bound validity check,
 handled as `INVALID` under §7.1.
