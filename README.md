@@ -36,8 +36,8 @@ What you write in a schema, and what it becomes on the wire. Several schema type
 | `u8` `u16` `u32` `u64` | unsigned integer | one varint carries every width; the declared width bounds the value — a wider value is invalid |
 | `i8` `i16` `i32` `i64` | signed integer | zig-zag |
 | `boolean` | unsigned integer | `0` or `1` |
-| `enum` | signed integer | the member's value, signed 32-bit range |
-| `bitfield` | unsigned integer | the flags packed into one value |
+| `enum` | signed integer | the member's value; the declared constants bound it — an undeclared value is invalid |
+| `bitfield` | unsigned integer | the flags packed into one value; the declared bits bound it — an undeclared bit is invalid |
 | `fp32` `fp64` | fixlen | 4 / 8 raw IEEE-754 bytes |
 | `string` | fixlen | UTF-8, no terminator |
 | `blob` | fixlen | opaque bytes |
@@ -120,7 +120,7 @@ This data was used to keep the overhead for frequently used types as low as poss
 * The parser requires a temporary 64-bit buffer to sequentially decode the stream.
 * After decoding, the value is **zig-zag decoded** into a signed integer.
 * If the receiver is interested in the field, the value is then written to the destination buffer as a **signed** value.
-* **Enums** have no dedicated wire type — they are encoded exactly as signed integers (zig-zag varint). The enum meaning exists only in the schema; on the wire an enum is indistinguishable from a signed integer. Enum values are limited to the **signed 32-bit range** (−2,147,483,648 .. 2,147,483,647).
+* **Enums** have no dedicated wire type — they are encoded exactly as signed integers (zig-zag varint), so on the wire an enum is indistinguishable from a signed integer. The schema still binds it: an enum is **closed**, and a value that is not one of its declared constants is invalid, however well it would fit the wire type (the signed 32-bit range, −2,147,483,648 .. 2,147,483,647, is that type's ceiling). Adding a constant is therefore a breaking schema change; a field that must carry values the schema does not yet name is an integer, not an enum.
 
 ### Fixlen Length and Type
 

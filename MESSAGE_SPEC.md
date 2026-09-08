@@ -45,8 +45,8 @@ header and marker bytes are never spelled out here — that's CORELIB_PLAN's job
 | `u8` `u16` `u32` `u64` | unsigned integer (§4.4) | one unsigned-integer wire type carries every width; the declared width is a **normative validity bound** on the value — a wire value outside its range is `INVALID` (§7.1) |
 | `i8` `i16` `i32` `i64` | signed integer (§4.5) | zig-zag; the declared width is a **normative validity bound** — a wire value outside its range is `INVALID` (§7.1) |
 | `boolean` | unsigned integer (§4.4) | no own wire type; encoded as `0`/`1` via the corelib bool helper |
-| `enum` | signed integer (§4.5) | no own wire type; carries the member's value, signed 32-bit range |
-| `bitfield` | unsigned integer (§4.4) | no own wire type; flags packed by generated code at their `pos` bits |
+| `enum` | signed integer (§4.5) | no own wire type; carries the member's value. The **declared constants are a normative validity bound** — a value that is not one of them is `INVALID` (§7.1); the signed 32-bit range is the wire type's outer ceiling, not the field's bound |
+| `bitfield` | unsigned integer (§4.4) | no own wire type; flags packed by generated code at their `pos` bits. The **declared bits are a normative validity bound** — a value carrying a bit the schema does not declare is `INVALID` (§7.1) |
 | `fp32` | fixlen, subtype fp32 (§4.6) | |
 | `fp64` | fixlen, subtype fp64 (§4.6) | |
 | `string` | fixlen, subtype string (§4.6) | UTF-8, no null terminator |
@@ -63,10 +63,65 @@ wire type regardless of width (table above), so the width is not encoded, but it
 still constrains what is valid. A wire value outside the declared width's range — a
 `u8` carrying > 255, an `i16` outside −32768 .. 32767 — is malformed input, exactly
 as an over-`maxlen` string or an over-`count` element count is, and **MUST** be
-reported `INVALID` (§7.1). An `enum` is bound the same way by its signed 32-bit
-range (table above). Because over-width is rejected, native-width storage is always
-sufficient — the receiver never has to hold a value wider than the field's declared
-type, which is the sense in which the width is also a *storage* fact.
+reported `INVALID` (§7.1). Because over-width is rejected, native-width storage is
+always sufficient — the receiver never has to hold a value wider than the field's
+declared type, which is the sense in which the width is also a *storage* fact.
+
+**An `enum` is closed (normative).** Its bound is not a width but the **set of
+constants the schema declares**: a wire value that is not one of them is malformed
+input and **MUST** be reported `INVALID` (§7.1), exactly as an over-width integer is.
+The signed 32-bit range of the table above is the ceiling of the *wire type*, not the
+bound of the *field* — a value inside that range which the schema does not declare is
+`INVALID` all the same. This is the one leaf type whose bound is a set rather than an
+interval, and it is stated here because §7.1's list of bounds is otherwise about
+widths and lengths.
+
+Three consequences follow, all deliberate:
+
+* **Adding a constant to an enum is a breaking schema change.** A receiver built on
+  the older schema rejects a message carrying the new value rather than storing
+  something its declared type cannot represent. A field that must tolerate values the
+  schema does not yet name is an **integer**, not an enum — the format offers no third
+  state, because it has nowhere to keep an unrecognized value: there is no
+  unknown-field store, by design (CORELIB_PLAN §6.6 — nothing the message chooses is
+  allocated on the receiver).
+* **Storage follows the constants.** Every valid value being a declared one, a
+  receiver **MAY** store an enum in the smallest integer type that holds every
+  constant, and a footprint target does. The format never obliges it to reserve a
+  wider one for a value it must reject anyway.
+* **A field's default must be a value the enum admits.** §2 initializes every field
+  to its schema `default`, or to *the type's zero value* when none is given, and a
+  sparse encoder omits the field at exactly that value — so absence reconstructs it on
+  every receiver. Closing the enum makes that fallback a schema question: an `enum`
+  field **MUST** either declare a `default` naming one of the enum's constants, or
+  belong to an enum that declares a constant with the value `0`. An enum
+  `{RED = 1, GREEN = 2}` whose field declares no `default` is **not** a valid schema —
+  its fields would initialize to `0`, a value the enum itself rejects. This is a
+  schema-validity rule (§6), not a decode check: no such value ever reaches the wire,
+  precisely because the field is omitted at its default. A `bitfield` needs no
+  counterpart clause — its zero value is the "no flags set" combination and is always
+  valid.
+
+**A `bitfield` is closed too, by its bits (normative).** Its bound is the **mask of
+the positions the schema declares**: a wire value `v` is valid exactly when
+`v & ~mask == 0`, where `mask` has one bit set per declared `pos`. Every combination
+of declared flags is therefore valid — including none of them, the zero value — and a
+value carrying any other bit is malformed input and **MUST** be reported `INVALID`
+(§7.1). The unsigned-integer wire type's range is that type's ceiling, not the
+field's bound.
+
+The mask is not "every bit up to the highest declared one": a bitfield declaring
+positions 0, 1 and 3 has `mask = 0b1011`, so bit 2 is undeclared and a value of `4`
+is `INVALID` — the same way an enum declaring `{0, 1, 2, 10}` rejects `5`. The two
+leaf types differ in what the schema declares (a set of values, a set of bits) and
+agree in the rule applied to it: **what the schema declares is what binds.**
+
+The two consequences of the enum rule hold unchanged here, with `pos` in place of
+constants: adding a flag is a **breaking schema change**, and a receiver **MAY**
+store the field in the smallest unsigned integer that holds the highest declared
+position. That storage choice is a footprint decision and never a validity one — a
+field whose declared positions are 0..3 does **not** become 0..255 valid because the
+target happens to hold it in a byte.
 
 ---
 
@@ -546,20 +601,23 @@ This document adds only the obligations on **generated code**:
   schema-bound violations are detected — and reported — by generated code: a wire
   element count `M > N` on a `count`-bounded array (§3), a wrapper-array element id
   `≥ N` (§5.1), a `string`/`blob` whose wire byte length exceeds its schema
-  `maxlen` (§1), or an **integer scalar whose wire value exceeds its declared
-  width** (§1). Each is malformed input and **MUST** be reported as `INVALID`,
-  the same terminal outcome as the corelib's own (CORELIB_PLAN §5.2) — never as
-  `INCOMPLETE`, never silently truncated to the bound, and (for a scalar) never
-  masked to its width. §7.1 states how far that binds.
+  `maxlen` (§1), an **integer scalar whose wire value exceeds its declared width**, an
+  **`enum` value the schema does not declare**, or a **`bitfield` value carrying an
+  undeclared bit** (§1). Each is malformed input and **MUST** be reported as
+  `INVALID`, the same terminal outcome as the corelib's own (CORELIB_PLAN §5.2) —
+  never as `INCOMPLETE`, never silently truncated to the bound, and never silently
+  masked: neither a scalar to its declared width nor a bitfield to its declared bits.
+  §7.1 states how far that binds.
 
 ### 7.1 A declared bound binds every target (normative)
 
-A schema `count: N` on an array, a `maxlen: L` on a `string`/`blob`, and the
-**declared width** of an integer scalar (`u8`…`u64`, `i8`…`i64` — §1) are
-**wire-validity bounds**, not sizing hints. They bind **every implementation,
-regardless of its allocation strategy**: a heap-less target that pre-sizes a buffer
-from the bound and a heap target that allocates per message **MUST both reject**
-input that exceeds it, with the same `INVALID` outcome.
+A schema `count: N` on an array, a `maxlen: L` on a `string`/`blob`, the **declared
+width** of an integer scalar (`u8`…`u64`, `i8`…`i64` — §1), the **declared constants**
+of an `enum` and the **declared bits** of a `bitfield` (§1) are **wire-validity
+bounds**, not sizing hints. They bind **every implementation, regardless of its
+allocation strategy**: a heap-less target that pre-sizes a buffer from the bound and a
+heap target that allocates per message **MUST both reject** input that exceeds it, with
+the same `INVALID` outcome.
 
 A decoder **MUST NOT** accept an over-bound value merely because its storage happens
 to be able to hold it — a `u8` field whose value arrives as `16383` is rejected even
