@@ -36,8 +36,8 @@ What you write in a schema, and what it becomes on the wire. Several schema type
 | `u8` `u16` `u32` `u64` | unsigned integer | one varint carries every width; the declared width bounds the value — a wider value is invalid |
 | `i8` `i16` `i32` `i64` | signed integer | zig-zag |
 | `boolean` | unsigned integer | `0` or `1` |
-| `enum` | signed integer | the member's value; the declared constants bound it — an undeclared value is invalid |
-| `bitfield` | unsigned integer | the flags packed into one value; the declared bits bound it — an undeclared bit is invalid |
+| `enum` | signed integer | the member's value; bounded by the smallest signed width holding every declared constant — a value outside it is invalid |
+| `bitfield` | unsigned integer | the flags packed into one value; bounded by the smallest unsigned width holding the highest declared `pos` — a value outside it is invalid |
 | `fp32` `fp64` | fixlen | 4 / 8 raw IEEE-754 bytes |
 | `string` | fixlen | UTF-8, no terminator |
 | `blob` | fixlen | opaque bytes |
