@@ -92,7 +92,7 @@ Two reasons the bound is a width and not the set:
   a schema a forward and backward path that both sides can reason about. A value
   domain that narrows with every schema revision would open a second, silent one.
 
-Three consequences follow, all deliberate:
+Four consequences follow, all deliberate:
 
 * **Adding a constant is not a breaking schema change** as long as it fits the width
   already declared. It becomes one exactly when it widens the type — `{1, 2, 3}`
@@ -104,6 +104,14 @@ Three consequences follow, all deliberate:
   `u8` — because `−5` is a valid wire value for that field. This replaces the
   narrower allowance a closed enum would have permitted: the format never obliges a
   receiver to reserve more than the declared width, and never less.
+* **A target that cannot hold it at exactly that width checks the bound itself.**
+  Where a plain `i8` field lands in a narrow native type on its own, an enum usually
+  does not — a Java or Kotlin constant set is an `int`, Dart's `int` is 64-bit,
+  Python's is unbounded. Such a receiver holds the field wider and **MUST** then
+  enforce the declared width as an explicit check, because nothing about its storage
+  will. The bound is never satisfied by the storage type happening to be narrow
+  enough: §7.1 binds it regardless of the memory model, so that two conformant
+  implementations agree on which messages are valid.
 * **A value the schema does not name is stored as received.** It is not masked, not
   clamped, and not reported `INVALID` (§7). What it *means* is an application
   question — the format has nowhere to keep an interpretation it was never given
@@ -645,7 +653,9 @@ the same `INVALID` outcome.
 
 A decoder **MUST NOT** accept an over-bound value merely because its storage happens
 to be able to hold it — a `u8` field whose value arrives as `16383` is rejected even
-though the corelib's ≥64-bit varint accumulator (CORELIB_PLAN §4.1) can hold it,
+though the corelib's ≥64-bit varint accumulator (CORELIB_PLAN §4.1) can hold it, and
+an `enum` held in a language's 32- or 64-bit integer is rejected outside the width its
+constants declare (§1),
 exactly as an over-`maxlen` string is rejected on a heap target that could store it. Whether the bound is enforced must not be an emergent property
 of the memory model — two conformant implementations of the same schema **MUST** agree
 on which messages are valid.
