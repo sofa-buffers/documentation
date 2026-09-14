@@ -295,8 +295,9 @@ with value `0` or `1`.
   bargain §4.1.2 strikes for a non-minimal varint. A boolean has only two meanings, so a
   value the canonical form does not use still denotes one of them unambiguously; there is
   nothing to reject, only something to normalize. (This is why a boolean is **not** bound
-  the way an `enum` or a `bitfield` is — MESSAGE_SPEC §1. There, every value carries a
-  meaning of its own, so an undeclared one carries none and **is** `INVALID`.)
+  the way an `enum` or a `bitfield` is — MESSAGE_SPEC §1. Those carry the width their
+  declaration implies, and a value outside it **is** `INVALID`; a boolean carries no
+  width bound at all.)
 * The shared vectors carry a `boolean` op accordingly.
 
 Other schema types that lower to an unsigned integer (bitfields, flag sets) are a
