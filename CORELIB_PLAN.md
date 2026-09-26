@@ -966,7 +966,8 @@ that class of variation for the decode outcome; memory obligations get the same 
 #### 6.0.1 Sequence framing: `begin_lazy` / `end` / `end_keep` (normative outcome)
 
 MESSAGE_SPEC §2 omits a sequence-typed **field** whose value equals its declared default,
-and keeps the frame of a wrapper-array **element** that is all-default. Both are decided
+and keeps the frame of a wrapper-array **element** that is all-default and of a **held
+union option** other than `default_id` (MESSAGE_SPEC §4.2) that is all-default. All are decided
 by *what the children turn out to be*, while the sequence header has to be on the wire
 **before** them. A naive encoder would buffer the sub-message to find out. It does not
 have to.
@@ -986,15 +987,20 @@ schema, so generated code decides it at generation time:
 
 | position | closer |
 |---|---|
-| `struct` / `union` field | `end` |
-| array field (the wrapper) | `end` |
+| `struct` / `union` field, including a union's `default_id` option | `end` |
+| array field (the wrapper), including a union's `default_id` option | `end` |
 | wrapper-array **element** (`struct`/`union`/nested row) | `end_keep` |
 | array field already known to differ from a **non-empty** declared `default` | `end_keep` |
+| union **option** other than `default_id` (`struct`/`union`/wrapper array) | `end_keep` |
+
+Only the held option of a union is ever written (MESSAGE_SPEC §4.2), and whether an option
+is the union's `default_id` is fixed where the union is used, so this choice is static too.
 
 **`end_keep` is the safe default** because the failure directions are not symmetric: using
 it where `end` would do costs one non-canonical empty frame that a decoder normalizes away
-(MESSAGE_SPEC §2), while the reverse drops an element and silently changes an array's
-**length**.
+(MESSAGE_SPEC §2), while the reverse drops a frame the value depends on — an element, which
+silently changes an array's **length**, or a held union option, which silently turns the
+union into its `default_id`.
 
 **Holding a header back never changes the bytes.** Pending ids are encoder state, not
 buffer content, so a flush cannot split a pending run and a smaller-than-message output
@@ -2487,7 +2493,8 @@ A new `corelib-<lang>` is conformant when:
 
 - [ ] The encoder can produce the canonical sequence encoding of MESSAGE_SPEC §2 in a
       **single forward pass** — an all-default `struct`/`union` field omitted, an
-      all-default wrapper-array element still framed — either through a descriptor/object
+      all-default wrapper-array element and an all-default held union option other than
+      `default_id` still framed — either through a descriptor/object
       layer that decides per field before opening, or through the `begin_lazy` / `end` /
       `end_keep` API (§6.0.1). Held-back headers never make the bytes depend on the
       output-buffer size.

@@ -42,7 +42,7 @@ What you write in a schema, and what it becomes on the wire. Several schema type
 | `string` | fixlen | UTF-8, no terminator |
 | `blob` | fixlen | opaque bytes |
 | `struct` | sequence | its children are the fields |
-| `union` | sequence | at most one child; its ID picks the active option |
+| `union` | sequence | holds exactly one option: at most one child, whose ID picks it; if several arrive, the last one wins |
 | array of numbers | array wire type | one count, then the elements |
 | array of strings / blobs / structs | sequence | one child per element, ID = index |
 | map | array of `struct{ key, value }` | a pattern, not a type of its own |
@@ -55,7 +55,9 @@ Two schema attributes bound a field without ever reaching the wire: `maxlen` for
 
 Every field starts at its schema default, and the encoder writes **only what differs**. A field left at its default is simply absent, and the decoder restores it. There is no "is set" bit.
 
-This reaches into nested structures: a `struct` or `union` whose every field is at its default is left out entirely instead of being written as an empty shell — so a message in which nothing was set is **zero bytes long**.
+This reaches into nested structures: a `struct` whose every field is at its default, or a `union` holding its `default_id` option at that option's default, is left out entirely instead of being written as an empty shell — so a message in which nothing was set is **zero bytes long**.
+
+A union holding any **other** option is the exception: that option is written even when it is at its own default — as an empty shell if it is a struct — because the option's ID is the only record of which option is held. Inside the option, the usual rule applies again. For the same reason a union option that is a `string`, `blob` or array cannot declare a non-empty default.
 
 Arrays are where absence still carries meaning, so two rules protect them:
 
@@ -186,7 +188,7 @@ This data was used to keep the overhead for frequently used types as low as poss
   * Arrays with a dynamic number of elements
   * Arrays of variable-length elements, e.g. strings or blobs (each element may have a different length). Blobs behave just like strings — both are dynamic byte payloads.
   * Tagged unions ("exactly one of") — the union opens a sequence carrying at most one child, and the **id of that single field** identifies the active option. A struct and a union look identical on the wire; the schema tells them apart.
-* An **empty sequence** (a sequence start immediately followed by its end marker) is legal and must be accepted by the decoder; it is the composite-type counterpart of a zero-count array. The wire form is unconditional — *when* one is produced is a message-layer decision (see [Defaults](#defaults-what-is-not-written)): an explicitly empty array, or an array element that is entirely at its default. An all-default `struct` or `union` field is omitted instead.
+* An **empty sequence** (a sequence start immediately followed by its end marker) is legal and must be accepted by the decoder; it is the composite-type counterpart of a zero-count array. The wire form is unconditional — *when* one is produced is a message-layer decision (see [Defaults](#defaults-what-is-not-written)): an explicitly empty array, an array element that is entirely at its default, or a union option other than `default_id` held at its default. An all-default `struct` field, or a union holding `default_id` at its default, is omitted instead.
 * Sequences may nest up to a maximum depth of **255**; a decoder must reject deeper nesting as a malformed message.
 
 ### Sequence End
