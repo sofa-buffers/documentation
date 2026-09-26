@@ -163,11 +163,13 @@ A **message-layer** rule; the wire spec is deliberately unaware of it (CORELIB_P
 §4.7 states only neutral wire mechanics).
 
 - **Init to defaults.** A new message has every field at its schema `default` (or
-  the type's zero value when none is given; a union uses `default_id`).
+  the type's zero value when none is given; a union holds `default_id` at that
+  option's own default).
 - **Sparse encoding (mandatory, canonical).** The encoder **MUST** emit a field
-  **iff its value ≠ its default** — with exactly one exception, the **last element
-  of a wrapper array** (table below, §5.1); an omitted field is reconstructed as
-  the default. (A `u8` left at default `7` never appears on the wire.) There is
+  **iff its value ≠ its default** — with exactly two exceptions, the **last element
+  of a wrapper array** (table below, §5.1) and the **held option of a union** that
+  is not `default_id` (below, §4.2); an omitted field is reconstructed as the
+  default. (A `u8` left at default `7` never appears on the wire.) There is
   **no dense mode** — so every message value has exactly **one** canonical
   encoding. (The same principle reaches the byte level: every varint is emitted in
   its minimal form, and a decoder accepts-and-normalizes a non-minimal one —
@@ -178,7 +180,7 @@ A **message-layer** rule; the wire spec is deliberately unaware of it (CORELIB_P
   (CORELIB_PLAN §3), so its value is compared **per child field, recursively** —
   never as a raw byte image. A sequence-typed **field MUST be omitted iff its value
   equals the field's declared `default`**: for a `struct`, the value whose every
-  child equals its own declared default; for a `union`, `default_id` carrying that
+  child equals its own declared default; for a `union`, `default_id` held at that
   option's default (§4.2); for an array, the declared `default` (the empty
   collection when none is declared), compared element-wise — `count` is a capacity,
   not a length, so nothing is padded to it (§3). Absence reconstructs exactly this
@@ -190,15 +192,27 @@ A **message-layer** rule; the wire spec is deliberately unaware of it (CORELIB_P
 
   A `struct` frame is therefore never empty: a value differing from the field's
   default differs in at least one child, and the per-field rule writes that child.
-  A `union` has the one **degenerate case**, and it is resolved by omission: when
-  the active option is not `default_id` but equals **that option's own default**,
-  the per-field rule writes no child, so framing would yield an empty frame. Such a
-  union **MUST be omitted**, exactly like a default one. Nothing is lost — an empty
-  union frame decodes to `default_id` (§4.2), precisely what absence reconstructs,
-  and the identity of the active option is gone either way (the pre-existing §4.2
-  identity loss, unchanged here). A conformant encoder therefore **never emits an
-  empty `struct`/`union` frame**; every empty frame on the wire is an *array*
-  position.
+  A `union` frame is never empty either, but for a different reason. A union
+  whose held option is **not** `default_id` differs from its default whatever
+  that option's value, so it is framed — and its frame **MUST** carry the held
+  option **even when that option equals its own default**, because the child's
+  presence is what selects it:
+
+  - a scalar, `string` or `blob` option is written as its value;
+  - a `struct`/`union` option is written as a **present frame**, empty when every
+    child of it is at its own default;
+  - an `array` option is written as its value — the explicit empty form (§3, §5)
+    when it is empty; §4.2 admits no non-empty default there.
+
+  This is the second position, besides a wrapper array's last element, where
+  omission is suspended, and for the same reason: the child's presence carries
+  information its absence cannot — here, *which* option is held. Omitting it would
+  make the union decode as `default_id`. Only the held option's own presence is
+  exempt: inside it, the per-field rule applies unchanged, so a held
+  all-default `struct` option costs one empty frame whatever its size. A
+  conformant encoder therefore **never emits an empty `struct`/`union` field
+  frame**; an empty frame on the wire is an *array* position or a *held union
+  option*.
 
   **What an empty frame denotes (normative).** A decoder **MUST** accept a
   sequence that is present but carries no child. It always means *everything
@@ -211,12 +225,14 @@ A **message-layer** rule; the wire spec is deliberately unaware of it (CORELIB_P
   | **array wrapper** field | emits it **only** where the declared `default` is non-empty | the declared `default`, which may be non-empty | the **empty array**, length `0` — the faithful counterpart of JSON `[]` |
   | array **element**, interior (§5.1) | never emits it — the element is omitted, leaving an id gap | the element default | the **same value**, non-canonically |
   | array **element**, last (§5.1) | **MUST** emit it | *nothing* — absence shortens the array | an **all-default element that is present**; its id is what fixes the array's length (*highest present id + 1*) |
+  | held union **option** (a `struct`/`union` option) that is not `default_id` | **MUST** emit it | — a union without a child holds `default_id` | **that option, held, at its own default** — its id is what selects the option (§4.2, §7.4.1) |
 
-  Only the two array rows ever carry an empty frame from a conformant encoder, and
-  only in the **last** row does presence-versus-absence change the decoded *value*:
-  there the frame is load-bearing, because the wrapper carries no length field
-  (§5.1) — which is precisely why an all-default **element** at that position keeps
-  its frame while an all-default **field** never does. Everywhere else the empty
+  Only the two array rows and the union-option row ever carry an empty frame from a
+  conformant encoder, and only in the **last two** rows does presence-versus-absence
+  change the decoded *value*: there the frame is load-bearing — a wrapper carries no
+  length field (§5.1), and a union carries no tag besides its child's id (§4.2) —
+  which is precisely why an all-default **element** or **held option** at that
+  position keeps its frame while an all-default **field** never does. Everywhere else the empty
   frame is a non-canonical spelling of the omitted field, and a re-encode
   normalizes it away, exactly as a non-minimal varint (CORELIB_PLAN §4.1) is
   normalized. An encoder that framed every sequence (the pre-uniform behaviour)
@@ -281,8 +297,9 @@ A **message-layer** rule; the wire spec is deliberately unaware of it (CORELIB_P
   while the **last** element is always written (§5.1), so an array's length
   round-trips exactly and `["a", ""]`, `["a"]` and `[]` are three distinct
   encodings of three distinct values. Those two positions — an array wrapper whose
-  declared `default` is non-empty, and a wrapper array's last element — are the
-  **only** ones where present-but-empty and absent differ at all (table above).
+  declared `default` is non-empty, and a wrapper array's last element — together
+  with a held union option that is not `default_id` (§4.2) are the **only** ones
+  where present-but-empty and absent differ at all (table above).
 
 ---
 
@@ -364,23 +381,43 @@ somestruct = seq[20](                  # wrapper id 20 = the struct field's id
 
 ### 4.2 Union — `type: union`
 
-A sequence carrying **at most one** child: the present field, whose `id` selects
-the active `oneof` option. `default_id` applies when none is set. Indistinguishable
-on the wire from a one-field struct; the schema disambiguates. An empty union
-sequence means "no option active" → `default_id` — the same value its *absence*
-yields, so a default union is canonically **omitted** and a conformant encoder
-never emits an empty union frame; §2 gives that rule together with the one
-degenerate case it resolves. A decoder still accepts an empty frame and decodes it
-identically, as the omitted field.
+A union **holds exactly one option** at all times: it is a tagged sum type, never
+a record of its options. A new union holds `default_id` at that option's own
+default (§2); selecting another option discards the held one, and the new option
+starts from its own default.
+
+On the wire a union is a sequence carrying **at most one** child: the held option,
+whose `id` selects it. Indistinguishable on the wire from a one-field struct; the
+schema disambiguates. Producers **MUST NOT** emit more than one child. A decoder
+**MUST** accept a union frame carrying several children and **MUST NOT** report it
+as `INVALID`; §7.4.1 resolves them.
+
+A union holding `default_id` at that option's default is the union's default, the
+same value its *absence* yields, so it is canonically **omitted**. Every other
+union is framed, and its frame carries the held option **even when that option
+equals its own default** (§2) — the child's id is the only tag a union has. A
+conformant encoder therefore never emits an empty union frame. A decoder still
+accepts one: an empty union sequence carries no option, so it decodes identically
+to the omitted field.
 
 A union **option may be any field type** — a scalar, an array, a struct, even
 another union — so a union models a tagged sum type with an arbitrary payload.
-Nothing special on the wire: the active option is just its normal encoding,
-placed as the single child.
+Nothing special on the wire: the held option is just its normal encoding, placed
+as the single child.
 
 ```
-someunion = seq[21]( [1:str] option2 )   # option2 (id 1) active; the id selects it
+someunion = seq[21]( [1:str] option2 )   # option2 (id 1) held; the id selects it
+someunion = seq[21]( seq[2]() )          # option id 2 (a struct) held, at its own default
 ```
+
+A union option of type `array` **MUST NOT** declare a non-empty `default`.
+
+*(Rationale: a held option other than `default_id` is written even at its own
+default (§2). An empty array has a wire form of constant size — a zero count, or an
+empty wrapper frame — so that costs a few bytes at most. A non-empty default would
+have to be sent in full, at a cost that grows with the default. An all-zero default
+such as `[0, 0, 0]` is not empty: it is an array of length 3, and the compact and
+fixlen forms (§3) carry every one of its elements.)*
 
 ---
 
@@ -437,7 +474,7 @@ implementation note in CORELIB_PLAN §4.9. The only bound relevant at this layer
 that skipping/nesting stays within `MAX_DEPTH = 255`.)
 
 **Sparse elements, and the last element (normative).** Elements are child fields, so
-§2's per-field rule governs them — with the one exception it names:
+§2's per-field rule governs them — with the exception it names for them:
 
 - an **interior** element equal to its element default **MUST NOT** be written: a
   `string`/`blob` value is skipped, a `struct`/`union`/nested-array element is not
@@ -736,7 +773,7 @@ For each field id in a scope, the **last** occurrence applies. The rule binds **
 id, not per sequence**: a sequence opened again **continues** its scope, because a sequence
 opens an id scope *and nothing more* (CORELIB_PLAN §3) and so carries no value of its own.
 Children set by an earlier opening whose ids do not recur in a later one **are retained**.
-This covers structs (§4.1) and unions (§4.2).
+This covers structs (§4.1); a union scope holds one option, and §7.4.1 adds the rule for it.
 
 An **array wrapper is the exception**: the wrapper *is* the value of its array field — that
 is why arrays are carried in a wrapper rather than by repeating one id, and how an
@@ -756,6 +793,39 @@ actually lives — per field id within a scope, and to an array wrapper as a who
 case is `INVALID`, because rejecting a repeated id would oblige every decoder to track
 which ids it has already seen at every level of nesting, up to `MAX_DEPTH`. The rule above
 is the one a streaming decoder follows with no bookkeeping at all.)*
+
+#### 7.4.1 A union scope holds one option (normative)
+
+A union holds exactly one option (§4.2). Within a union scope, the held option is the
+**last correctly-typed occurrence of any option id**:
+
+- a child naming an option **other than** the held one **replaces** it: the held option is
+  discarded, and the new one starts from its own default before its payload is applied;
+- a child naming the **held** option continues it under §7.4 — a scalar is replaced, a
+  `struct`/`union` option continues its scope, an `array` option is replaced.
+
+This holds within one frame and across a re-opened frame alike. An occurrence skipped under
+§7.3, and a child whose id names no option (skipped as an unknown id), is **not** an
+occurrence: it neither switches nor discards the held option. Like the rest of §7.4, none
+of this is `INVALID`.
+
+```
+seq[21]( [0:u16] 7  [1:str] "x" )                            →  option 1 = "x"
+seq[21]( seq[2]( [0:i32] 1 ) )  seq[21]( seq[2]( [1:i32] 2 ) )   →  option 2 = { x = 1, y = 2 }
+seq[21]( seq[2]( [0:i32] 1 ) )  seq[21]( [0:u16] 5 )  seq[21]( seq[2]( [1:i32] 2 ) )
+                                                             →  option 2 = { x = 0, y = 2 }
+```
+
+In the last line, option 2 is discarded by option 0 and starts again from its default when
+it returns; its earlier `x = 1` does not survive.
+
+*(Rationale: a union has no tag besides its child's id, so the held option is simply the
+one that arrived last — the same "last occurrence wins" as §7.4, applied to the union as a
+whole instead of per id. It needs exactly one piece of state, the held option's id, which
+the destination holds anyway; no decoder has to remember which ids it has seen, so the
+clause keeps §7.4's property of needing no bookkeeping. Retaining an earlier option instead
+would give a decoded union two options, a value no union can hold. This is also the rule
+protobuf applies to a `oneof`.)*
 
 ---
 
