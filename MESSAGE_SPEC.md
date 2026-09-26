@@ -190,28 +190,29 @@ A **message-layer** rule; the wire spec is deliberately unaware of it (CORELIB_P
   with `sequence_begin`/`sequence_end`, its children again subject to the per-field
   rule.
 
-  A `struct` frame is therefore never empty: a value differing from the field's
-  default differs in at least one child, and the per-field rule writes that child.
-  A `union` frame is never empty either, but for a different reason. A union
-  whose held option is **not** `default_id` differs from its default whatever
-  that option's value, so it is framed — and its frame **MUST** carry the held
-  option **even when that option equals its own default**, because the child's
-  presence is what selects it:
+  A `struct` frame framed by this test is therefore never empty: a value differing
+  from the field's default differs in at least one child, and the per-field rule
+  writes that child. A `union` frame is never empty either, but for a different
+  reason. A union whose held option is **not** `default_id` differs from its
+  default whatever that option's value, so it is framed — and its frame **MUST**
+  carry the held option **even when that option equals its own default**, because
+  the child's presence is what selects it:
 
-  - a scalar, `string` or `blob` option is written as its value;
+  - a scalar option is written as its value;
+  - a `string`, `blob` or `array` option is written as its value — the empty
+    string, the empty blob, or the explicit empty array (§3, §5) — since §4.2
+    admits no non-empty default for these;
   - a `struct`/`union` option is written as a **present frame**, empty when every
-    child of it is at its own default;
-  - an `array` option is written as its value — the explicit empty form (§3, §5)
-    when it is empty; §4.2 admits no non-empty default there.
+    child of it is at its own default.
 
-  This is the second position, besides a wrapper array's last element, where
-  omission is suspended, and for the same reason: the child's presence carries
+  This is the second exception to the ≠-default rule, besides a wrapper array's
+  last element, and it has the same reason: the child's presence carries
   information its absence cannot — here, *which* option is held. Omitting it would
   make the union decode as `default_id`. Only the held option's own presence is
   exempt: inside it, the per-field rule applies unchanged, so a held
-  all-default `struct` option costs one empty frame whatever its size. A
-  conformant encoder therefore **never emits an empty `struct`/`union` field
-  frame**; an empty frame on the wire is an *array* position or a *held union
+  all-default `struct` option costs one empty frame whatever its size. Outside a
+  held union option, a conformant encoder **never emits an empty `struct`/`union`
+  frame**; every empty frame on the wire is an *array* position or a *held union
   option*.
 
   **What an empty frame denotes (normative).** A decoder **MUST** accept a
@@ -221,11 +222,11 @@ A **message-layer** rule; the wire spec is deliberately unaware of it (CORELIB_P
 
   | Sequence position | A conformant encoder | *Absent* denotes | *Present but empty* denotes |
   |---|---|---|---|
-  | `struct` / `union` **field** | never emits the empty frame | the declared default — every child at its own default, a union at `default_id` | the **same value** — a non-canonical encoding of the omitted field, which a decoder treats as omitted |
-  | **array wrapper** field | emits it **only** where the declared `default` is non-empty | the declared `default`, which may be non-empty | the **empty array**, length `0` — the faithful counterpart of JSON `[]` |
+  | `struct` / `union` **field** (not a held union option) | never emits the empty frame | the declared default — every child at its own default, a union at `default_id` | the **same value** — a non-canonical encoding of the omitted field, which a decoder treats as omitted |
+  | **array wrapper** field | emits it **only** where the declared `default` is non-empty, or where the array is a held union option (last row) | the declared `default`, which may be non-empty | the **empty array**, length `0` — the faithful counterpart of JSON `[]` |
   | array **element**, interior (§5.1) | never emits it — the element is omitted, leaving an id gap | the element default | the **same value**, non-canonically |
   | array **element**, last (§5.1) | **MUST** emit it | *nothing* — absence shortens the array | an **all-default element that is present**; its id is what fixes the array's length (*highest present id + 1*) |
-  | held union **option** (a `struct`/`union` option) that is not `default_id` | **MUST** emit it | — a union without a child holds `default_id` | **that option, held, at its own default** — its id is what selects the option (§4.2, §7.4.1) |
+  | held union **option** that is not `default_id` (a `struct`/`union` option, or an array option in wrapper form) | **MUST** emit it | — a union without a child holds `default_id` | **that option, held, at its own default** — its id is what selects the option (§4.2, §7.4.1); for an array option, the empty array, which is its default (§4.2) |
 
   Only the two array rows and the union-option row ever carry an empty frame from a
   conformant encoder, and only in the **last two** rows does presence-versus-absence
@@ -254,7 +255,8 @@ A **message-layer** rule; the wire spec is deliberately unaware of it (CORELIB_P
   *sequence-form element* is written at all, so no new machinery is introduced.
   Framing an all-default subtree costs two bytes per sequence node (more for a
   large id — CORELIB_PLAN §4.3) and carries no information: with no presence bit
-  (below), *absent* and *present-but-empty* are the same value.
+  (below), *absent* and *present-but-empty* are the same value — except at the
+  positions the table above names, where the presence itself is the information.
 - **Sparse omission reaches into wrapper-array elements — both element kinds.**
   A wrapper-sequence array (§5) *is* a sequence and its elements *are* its child
   fields (`id = index`, §5.1), so the per-field rule above applies to them with no
@@ -287,9 +289,12 @@ A **message-layer** rule; the wire spec is deliberately unaware of it (CORELIB_P
   elements may be carried, it does not give the array a minimum length (§3). When
   the field's `default` **is** the empty collection the two denote the **same
   value**; the wire forms are interchangeable and the **canonical** one is *absent*
-  — the sequence is omitted (≠-default bullet above). The distinction is thus
-  observable only for a field whose declared `default` is non-empty, and that is
-  what enables a faithful JSON `[]` ↔ SofaBuffers round-trip.
+  — the sequence is omitted (≠-default bullet above) — unless the array is a held
+  union option, where the explicit empty form is the canonical one (§4.2). The
+  distinction is thus observable only for a field whose declared `default` is
+  non-empty, and that is what enables a faithful JSON `[]` ↔ SofaBuffers
+  round-trip. (For a held union option, what the explicit empty form carries is not
+  the distinction from the default but the choice of the option — §4.2.)
 
   At the **element** level the answer differs by position: a default-valued
   *interior* element is **indistinguishable from an absent one** (both reconstruct
@@ -354,7 +359,9 @@ other side (§5.1): nothing that carries the length may be elided.
 
 **Canonical encoding.** Whether the field appears at all is the ordinary ≠-default
 test of §2, applied to the array's value; a schema `default` is compared as
-declared, never padded to `N` (§6). When the field is emitted, the encoder writes
+declared, never padded to `N` (§6). The one exception is an array that is the held
+option of a union: it is written even at its default — `M = 0`, since §4.2 admits no
+other default for it (§2). When the field is emitted, the encoder writes
 **every** element it holds.
 
 ---
@@ -410,14 +417,18 @@ someunion = seq[21]( [1:str] option2 )   # option2 (id 1) held; the id selects i
 someunion = seq[21]( seq[2]() )          # option id 2 (a struct) held, at its own default
 ```
 
-A union option of type `array` **MUST NOT** declare a non-empty `default`.
+A union option of type `string`, `blob` or `array` **MUST NOT** declare a non-empty
+`default`.
 
 *(Rationale: a held option other than `default_id` is written even at its own
-default (§2). An empty array has a wire form of constant size — a zero count, or an
-empty wrapper frame — so that costs a few bytes at most. A non-empty default would
-have to be sent in full, at a cost that grows with the default. An all-zero default
-such as `[0, 0, 0]` is not empty: it is an array of length 3, and the compact and
-fixlen forms (§3) carry every one of its elements.)*
+default (§2). An empty string, an empty blob and an empty array each have a wire
+form of constant size — a zero length, a zero count, or an empty wrapper frame — so
+that costs a few bytes at most. A non-empty default would have to be sent in full,
+at a cost that grows with the default. An all-zero array default such as
+`[0, 0, 0]` is not empty: it is an array of length 3, and the compact and fixlen
+forms (§3) carry every one of its elements. A scalar option's default costs at most
+one varint or fixed-width value, and a `struct`/`union` option's default costs one
+empty frame, so neither needs the restriction.)*
 
 ---
 
@@ -514,8 +525,9 @@ target does. An **interior** default element is indistinguishable from an absent
 (§2) — by design, and lossless against the default-initialised destination required
 above — but it can never be the one that fixes the length. An array with **no
 element at all** is the empty array; the wrapper sequence is then **omitted** by the
-≠-default rule of §2 — unless the field's declared `default` is non-empty, where the
-empty wrapper is retained as the explicit-empty form.
+≠-default rule of §2 — unless the field's declared `default` is non-empty, or the
+array is the held option of a union (§4.2), where the empty wrapper is retained as
+the explicit-empty form.
 
 ### 5.2 The cases
 
@@ -643,6 +655,10 @@ Two consequences of `count` being a capacity (§3):
   (`minItems` dropped; `maxItems ≤ count` kept), so an explicit `default: []` can
   override a non-empty default (§2). A shorter `default` stands for itself — it is
   not padded to `count`.
+
+One consequence of a union holding one option (§4.2): a union option of type
+`string`, `blob` or `array` declares no non-empty `default`, and the schema rejects
+one that does.
 
 Deliberately left for later (cheap to add): deep `default`-value validation for
 composite-element arrays (currently a generic array bounded by `count`).
