@@ -122,7 +122,7 @@ This data was used to keep the overhead for frequently used types as low as poss
 * The parser requires a temporary 64-bit buffer to sequentially decode the stream.
 * After decoding, the value is **zig-zag decoded** into a signed integer.
 * If the receiver is interested in the field, the value is then written to the destination buffer as a **signed** value.
-* **Enums** have no dedicated wire type — they are encoded exactly as signed integers (zig-zag varint), so on the wire an enum is indistinguishable from a signed integer. The schema still binds it: an enum is **closed**, and a value that is not one of its declared constants is invalid, however well it would fit the wire type (the signed 32-bit range, −2,147,483,648 .. 2,147,483,647, is that type's ceiling). Adding a constant is therefore a breaking schema change; a field that must carry values the schema does not yet name is an integer, not an enum.
+* **Enums** have no dedicated wire type — they are encoded exactly as signed integers (zig-zag varint), so on the wire an enum is indistinguishable from a signed integer. The schema still bounds it: by the **smallest signed width holding every declared constant** — `{RED = 1, GREEN = 2, BLUE = 3}` is an `i8`, −128 .. 127. A value inside that width that names no constant is **valid** and is kept as received; only a value outside the width is invalid. Adding a constant is therefore a breaking schema change only when it widens that type. (MESSAGE_SPEC §1)
 
 ### Fixlen Length and Type
 
