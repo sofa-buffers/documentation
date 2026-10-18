@@ -169,7 +169,11 @@ A **message-layer** rule; the wire spec is deliberately unaware of it (CORELIB_P
   **iff its value ≠ its default** — with exactly two exceptions, the **last element
   of a wrapper array** (table below, §5.1) and the **held option of a union** that
   is not `default_id` (below, §4.2); an omitted field is reconstructed as the
-  default. (A `u8` left at default `7` never appears on the wire.) There is
+  default. (A `u8` left at default `7` never appears on the wire.) A
+  floating-point value (scalar or array element) is compared with its default
+  **by bit pattern**, not by IEEE `==`: `-0.0` is not the default `0`, and a `NaN`
+  equals only a `NaN` with identical bits — otherwise omission would lose what
+  CORELIB_PLAN §4.6 makes every float keep. There is
   **no dense mode** — so every message value has exactly **one** canonical
   encoding. (The same principle reaches the byte level: every varint is emitted in
   its minimal form, and a decoder accepts-and-normalizes a non-minimal one —
