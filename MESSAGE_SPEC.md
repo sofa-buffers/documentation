@@ -584,7 +584,7 @@ the array's wrapper sequence, at the child id equal to its array index (§5.1). 
 nesting level adds one sequence depth; the total stays within `MAX_DEPTH = 255`.
 There is no special case beyond "leaf / scalar-array vs. sequence."
 
-### 5.4 Maps and recursive types
+### 5.4 Maps; no recursive types
 
 **Map** — there is no distinct map type; a map is `array of struct{ key, value }`
 (a wrapper sequence of two-field structs), so §5.1 applies unchanged: entries are
@@ -596,31 +596,21 @@ the map at `N` entries without asserting that `N` exist — the unused slots of 
 pre-sized target stay at their all-default value (the natural "empty slot" sentinel
 for a fixed-capacity map).
 
-**Recursive types** — a struct may reference itself, directly or through an array
-element, via a `$ref` to a predefined `$defs` struct. This expresses trees and
-linked lists:
+**No recursive types** — a definition may not refer to itself, directly or through
+other definitions (a `$ref` cycle, across files included). A generator **MUST**
+refuse such a schema. A recursive value member has no finite size, so a heap-less
+target cannot hold it inline, and every generated walker (defaults, equality, copy,
+decode, encode) would need its own depth guard. A tree or graph is expressed as a
+flat array of nodes that refer to each other by index:
 
 ```
-treenode = struct{ value: i32, children: array of <$ref treenode> }
+tree = struct{ nodes: array of struct{ value: i32, parent: u32 } }
 ```
 
-On the wire this is nothing new — just nested sequences that bottom out when a
-node's child array is empty or omitted. Three guardrails:
-
-- **Decode is bounded.** `MAX_DEPTH = 255` (CORELIB_PLAN §4.9): a decoder rejects
-  anything nested deeper, so a hostile or buggy stream cannot exhaust the stack.
-- **Termination must be reachable.** Recursion has to pass through an
-  optional / possibly-empty field (an array, or an omittable child) so a finite
-  instance exists — an empty/absent child array is the natural base case. A struct
-  that *required* a non-empty copy of itself could never be encoded.
-- **Encode needs an acyclic graph.** Trees are acyclic by construction; if an
-  application hands the encoder an object that points back to an ancestor (a real
-  cycle), encoding would loop — the generated encoder should guard with the same
-  `MAX_DEPTH` budget and error rather than spin.
-
-Schema validation itself does **not** loop: a `$ref` in a message definition is an
-opaque name the generator resolves, not a structure the validator expands, so
-validating a recursive definition terminates immediately.
+The wire is unaffected: nesting depth stays bounded by `MAX_DEPTH = 255`
+(CORELIB_PLAN §4.9), which every decoder enforces whatever the schema. This is not
+the nesting of §5.3 — an array element that is itself a struct, union or array
+composes freely; only a type that contains itself is ruled out.
 
 ---
 
@@ -637,7 +627,7 @@ wire id is its array index, §5.1) — so every type can be an array element:
 - composite elements: **`struct`** (`fields`), **`union`** (`oneof` / `default_id`),
   **`array`** (nested `items`) — the recursion that yields matrices, lists of
   records, and lists of variants;
-- recursion via `$ref` to a predefined `$defs` struct/union (§5.4).
+- a `$ref` to a predefined `$defs` struct/union, which may not form a cycle (§5.4).
 
 The schema requires the matching sub-definition per element type
 (`struct → fields`, `union → oneof`, `array → items`, `enum → enum`,
